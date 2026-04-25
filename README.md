@@ -52,7 +52,7 @@
 
 ```bash
 cp .env.example .env   # 填写模型 API Key 等必要配置
-docker compose up -d
+docker-compose up -d --build
 ```
 
 后端默认端口 `3001`，前端默认端口 `3002`。

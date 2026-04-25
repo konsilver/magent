@@ -31,7 +31,7 @@ interface ChatAreaProps {
 }
 
 export function ChatArea({
-  send, abort, exportChatRecord, createChatShare, onCapabilityClick, handleFileSelect, removeFile,
+  send, abort, exportChatRecord, createChatShare, handleFileSelect, removeFile,
   regenerate, editAndResend,
   inputRef, fileInputRef, chatListRef, messagesEndRef,
 }: ChatAreaProps) {
