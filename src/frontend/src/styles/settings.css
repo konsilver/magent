@@ -1,0 +1,777 @@
+/* ── Settings page (full-page, replaces chat area) ──────────────── */
+
+.jx-settings-page {
+  max-width: 840px;
+  margin: 0 auto;
+  padding: 40px 24px 60px;
+  font-family: 'PingFang SC', -apple-system, sans-serif;
+}
+
+.jx-settings-title {
+  font-size: 20px;
+  font-weight: 500;
+  color: #1a1a1a;
+  margin: 0 0 28px;
+}
+
+.jx-settings-section-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: #000;
+  margin: 0 0 10px;
+}
+
+/* Card container — bg-neutral-100, rounded-xl, border */
+.jx-settings-card {
+  background: #F5F5F5;
+  border: 1px solid #E3E6EA;
+  border-radius: 12px;
+  padding: 0;
+  margin-bottom: 24px;
+}
+
+/* ── User info ──────────────────────────────────────────────────── */
+
+.jx-settings-userInfo {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 24px 20px;
+}
+
+.jx-settings-avatarWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.jx-settings-avatarHoverBtn {
+  position: relative;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 50%;
+  display: block;
+  flex-shrink: 0;
+}
+
+.jx-settings-avatarHoverBtn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.jx-settings-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: block;
+  object-fit: cover;
+  background: #fff;
+  border: 1px solid #E3E6EA;
+}
+
+.jx-settings-avatarOverlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+
+.jx-settings-avatarHoverBtn:hover .jx-settings-avatarOverlay {
+  opacity: 1;
+}
+
+.jx-settings-avatarPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.jx-settings-avatarPickerHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.jx-settings-avatarPickerTitle {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #334155;
+}
+
+.jx-settings-avatarPickerDesc {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.jx-settings-avatarGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.jx-settings-avatarOption {
+  appearance: none;
+  border: 1px solid #E3E6EA;
+  border-radius: 18px;
+  background: #fff;
+  padding: 10px;
+  cursor: pointer;
+  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+
+.jx-settings-avatarOption:hover {
+  transform: translateY(-1px);
+  border-color: rgba(18,109,255,.35);
+  box-shadow: 0 8px 20px rgba(15,23,42,.08);
+}
+
+.jx-settings-avatarOption.active {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(18,109,255,.12);
+}
+
+.jx-settings-avatarOptionImage {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 16px;
+  display: block;
+  object-fit: cover;
+}
+
+.jx-settings-userMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.jx-settings-userName {
+  font-size: 18px;
+  font-weight: 400;
+  color: #262626;
+}
+
+.jx-settings-userId {
+  font-size: 14px;
+  color: #999;
+  font-weight: 400;
+}
+
+/* ── Rows (toggle items) ────────────────────────────────────────── */
+
+.jx-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px;
+}
+
+.jx-settings-rowLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  margin-right: 16px;
+}
+
+.jx-settings-rowLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1a1a1a;
+}
+
+.jx-settings-rowDesc {
+  font-size: 14px;
+  color: #B3B3B3;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+.jx-settings-divider {
+  height: 0;
+  border-top: 1px solid #E3E6EA;
+  margin: 0 20px;
+}
+
+/* ── Memory detail line ─────────────────────────────────────────── */
+
+.jx-settings-memoryDetail {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px 16px;
+}
+
+.jx-settings-memoryCount {
+  font-size: 14px;
+  color: #999;
+}
+
+.jx-settings-memoryLink {
+  font-size: 14px;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.jx-settings-memoryLink:hover {
+  text-decoration: underline;
+}
+
+/* ── Enabled groups ─────────────────────────────────────────────── */
+
+.jx-settings-enabledGroup {
+  padding: 16px 20px 8px;
+}
+
+.jx-settings-enabledGroup + .jx-settings-enabledGroup {
+  padding-top: 8px;
+}
+
+.jx-settings-enabledLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1a1a1a;
+  display: block;
+  margin-bottom: 10px;
+}
+
+.jx-settings-tagWrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Tags: bg-white, rounded, outline 线条, text-slate-600 */
+.jx-settings-tag.ant-tag {
+  margin: 0;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 400;
+  padding: 4px 8px;
+  border: 1px solid #E3E6EA;
+  background: #fff;
+  color: #475569;
+}
+
+.jx-settings-emptyHint {
+  padding: 20px 20px;
+  font-size: 14px;
+  color: #999;
+}
+
+/* ── Logout button — outline 主色, text-blue-600 ────────────────── */
+
+.jx-settings-logoutBtn.ant-btn {
+  height: 48px;
+  border-radius: 12px;
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+  font-size: 14px;
+  font-weight: 500;
+  background: #fff;
+}
+
+.jx-settings-logoutBtn.ant-btn:hover {
+  border-color: var(--color-primary-active);
+  color: var(--color-primary-active);
+  background: #f8faff;
+}
+
+.jx-settings-avatarCrop {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jx-settings-avatarCropStage {
+  position: relative;
+  width: 320px;
+  height: 320px;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 18px;
+  background:
+    linear-gradient(45deg, rgba(226,232,240,.9) 25%, transparent 25%) -12px 0/24px 24px,
+    linear-gradient(-45deg, rgba(226,232,240,.9) 25%, transparent 25%) -12px 0/24px 24px,
+    linear-gradient(45deg, transparent 75%, rgba(226,232,240,.9) 75%) -12px 0/24px 24px,
+    linear-gradient(-45deg, transparent 75%, rgba(226,232,240,.9) 75%) -12px 0/24px 24px,
+    #f8fafc;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.jx-settings-avatarCropStage:active {
+  cursor: grabbing;
+}
+
+.jx-settings-avatarCropImage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  max-height: none;
+  transform-origin: center center;
+  will-change: transform, width, height;
+}
+
+.jx-settings-avatarCropMask {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255,255,255,.85);
+  border-radius: 18px;
+  box-shadow: inset 0 0 0 1px rgba(15,23,42,.08);
+  pointer-events: none;
+}
+
+.jx-settings-avatarCropHint {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #64748B;
+  text-align: center;
+}
+
+.jx-settings-avatarZoomRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.jx-settings-avatarZoomLabel {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: #334155;
+}
+
+.jx-settings-avatarZoomRow .ant-slider {
+  flex: 1;
+  margin: 0;
+}
+
+.jx-shareRecordsPage {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 40px 24px 60px;
+}
+
+.jx-shareRecordsPage.embedded {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.jx-shareRecordsPage.embedded .jx-shareRecordsHead {
+  margin-bottom: 16px;
+  padding: 0;
+  align-items: flex-start;
+}
+
+.jx-shareRecordsPage.embedded .jx-shareRecordsHeadMain {
+  display: block;
+  min-width: 0;
+}
+
+.jx-shareRecordsPage.embedded .jx-shareRecordsHead.noDesc {
+  justify-content: flex-end;
+  transform: translateY(-8px);
+}
+
+.jx-shareRecordsPage.embedded .jx-shareRecordsDesc {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+
+.jx-shareRecordsPage.embedded .jx-shareRecordsToolbar {
+  gap: 8px;
+  align-items: center;
+  padding-top: 0;
+}
+
+.jx-shareRecordsPage.embedded .jx-shareRecordsSearch {
+  width: 300px;
+  max-width: 100%;
+}
+
+.jx-shareRecordsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.jx-shareRecordsHeadMain {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  flex: 1;
+}
+
+.jx-shareRecordsToolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.jx-shareRecordsSearch {
+  width: 214px;
+  max-width: 100%;
+}
+
+.jx-shareRecordsTitle {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.jx-shareRecordsDesc {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #6b7280;
+}
+
+.jx-shareRecordsEmpty {
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #E3E6EA;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.jx-shareRecordsList {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jx-shareRecordCard {
+  border: 1px solid #E3E6EA;
+  border-radius: 12px;
+  background: #fff;
+  padding: 18px 20px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.jx-shareRecordsLoading {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jx-shareRecordCardSkeleton {
+  pointer-events: none;
+  border-radius: 12px;
+  background: rgba(244, 244, 244, 0.92);
+  border-color: rgba(240, 240, 240, 0.95);
+  box-shadow: none;
+}
+
+.jx-shareRecordCardSkeleton .jx-shareRecordMeta {
+  width: 100%;
+}
+
+.jx-shareRecordSideSkeleton {
+  min-width: 228px;
+}
+
+.jx-shareSkTitle {
+  width: min(320px, 56%);
+  height: 16px;
+  border-radius: 999px;
+}
+
+.jx-shareSkTag {
+  width: 68px;
+  height: 24px;
+  border-radius: 999px;
+}
+
+.jx-shareSkTagWide {
+  width: 92px;
+}
+
+.jx-shareSkMeta {
+  width: 160px;
+  height: 11px;
+  border-radius: 999px;
+}
+
+.jx-shareSkMetaShort {
+  width: 84px;
+}
+
+.jx-shareSkAction {
+  width: 116px;
+  height: 34px;
+  border-radius: 999px;
+}
+
+.jx-shareSkViews {
+  width: 52px;
+  height: 11px;
+  border-radius: 999px;
+}
+
+.jx-shareSkTextBtn {
+  width: 54px;
+  height: 11px;
+  border-radius: 999px;
+}
+
+.jx-shareRecordTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.jx-shareRecordMain {
+  min-width: 0;
+  flex: 1;
+}
+
+.jx-shareRecordTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.jx-shareRecordJumpBtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background .16s ease, transform .16s ease;
+}
+
+.jx-shareRecordJumpBtn:hover,
+.jx-shareRecordJumpBtn:focus-visible {
+  background: rgba(148, 163, 184, 0.12);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.jx-shareRecordJumpIcon {
+  width: 16px;
+  height: 16px;
+  display: block;
+  opacity: 0.9;
+  transition: opacity .16s ease, filter .16s ease;
+}
+
+.jx-shareRecordJumpBtn:hover .jx-shareRecordJumpIcon,
+.jx-shareRecordJumpBtn:focus-visible .jx-shareRecordJumpIcon {
+  opacity: 1;
+  filter: brightness(0.85);
+}
+
+.jx-shareRecordTitleBtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  transition: color .16s ease;
+}
+
+.jx-shareRecordTitle {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: #111827;
+  transition: color .16s ease;
+}
+
+.jx-shareRecordTitleBtn:hover .jx-shareRecordTitle {
+  color: #6b7280;
+}
+
+.jx-shareRecordMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #6b7280;
+}
+
+.jx-shareRecordMetaBtn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
+  cursor: pointer;
+  transition: color .16s ease;
+}
+
+.jx-shareRecordMetaBtn .anticon {
+  font-size: 10px;
+}
+
+.jx-shareRecordMetaBtn:hover,
+.jx-shareRecordMetaBtn:focus {
+  color: #475569;
+}
+
+.jx-shareRecordIdPopover .ant-popover-inner {
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.10);
+}
+
+.jx-shareRecordIdValue {
+  display: inline-block;
+  max-width: 360px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.jx-shareRecordSide {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 14px 10px;
+  align-content: start;
+  justify-content: end;
+  flex-shrink: 0;
+}
+
+.jx-shareRecordViewsMain {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.jx-shareRecordViewsMain .anticon {
+  font-size: 12px;
+}
+
+.jx-shareRecordViewsRow {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.jx-shareRecordTerminateBtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .16s ease;
+}
+
+.jx-shareRecordTerminateBtn:hover,
+.jx-shareRecordTerminateBtn:focus {
+  color: #64748b;
+}
+
+.jx-shareRecordSide .ant-btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 11px;
+  border-color: rgba(148, 163, 184, 0.28);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: none;
+  transition: border-color .16s ease, color .16s ease, background-color .16s ease;
+}
+
+.jx-shareRecordSide .ant-btn .anticon {
+  font-size: 13px;
+}
+
+.jx-shareRecordSide .ant-btn:hover,
+.jx-shareRecordSide .ant-btn:focus {
+  border-color: rgba(148, 163, 184, 0.42);
+  color: #0f172a;
+  background: #fbfcfe;
+}
+
+@media (max-width: 768px) {
+  .jx-shareRecordsHead,
+  .jx-shareRecordTop {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .jx-shareRecordsHeadMain {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .jx-shareRecordsToolbar {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .jx-shareRecordsSearch {
+    width: 100%;
+  }
+
+  .jx-shareRecordSide,
+  .jx-shareRecordSide {
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .jx-shareRecordSideSkeleton {
+    min-width: 0;
+  }
+
+  .jx-shareRecordViewsRow {
+    grid-column: 2;
+  }
+}

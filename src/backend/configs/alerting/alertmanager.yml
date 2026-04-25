@@ -1,0 +1,166 @@
+# Alertmanager configuration for Jingxin-Agent
+#
+# This file configures how alerts are routed and sent to different channels.
+# Customize the receivers section with your actual endpoints.
+
+global:
+  # Global defaults
+  resolve_timeout: 5m
+
+  # Slack (if used)
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+  # PagerDuty (if used)
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# Templates for notifications
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Route tree
+route:
+  # Default receiver
+  receiver: 'default'
+
+  # Group alerts by these labels
+  group_by: ['alertname', 'service', 'severity']
+
+  # Wait time before sending first notification for a group
+  group_wait: 10s
+
+  # Wait time before sending notification about new alerts in a group
+  group_interval: 10s
+
+  # Wait time before resending notification if alert is still firing
+  repeat_interval: 3h
+
+  # Child routes
+  routes:
+    # P0 alerts: Page on-call immediately
+    - match:
+        severity: P0
+      receiver: pagerduty
+      continue: true
+      group_wait: 0s
+      group_interval: 5m
+      repeat_interval: 30m
+
+    # P1 alerts: Notify team channel
+    - match:
+        severity: P1
+      receiver: slack-urgent
+      continue: true
+      group_wait: 30s
+      repeat_interval: 1h
+
+    # P2 alerts: Notify team channel (less urgent)
+    - match:
+        severity: P2
+      receiver: slack-warnings
+      continue: true
+      group_wait: 5m
+      repeat_interval: 4h
+
+    # P3 alerts: Log only or email
+    - match:
+        severity: P3
+      receiver: email
+      group_wait: 10m
+      repeat_interval: 12h
+
+# Inhibition rules (suppress certain alerts when others are firing)
+inhibit_rules:
+  # If service is down, don't alert on high error rates
+  - source_match:
+      alertname: ServiceDown
+    target_match_re:
+      alertname: (HighServerErrorRate|HighClientErrorRate|.*Errors)
+    equal: ['service']
+
+  # If circuit breaker is open, don't alert on integration failures
+  - source_match:
+      alertname: CircuitBreakerOpen
+    target_match_re:
+      alertname: (UserCenterIntegrationFailure|ModelAPIErrors|StorageOperationFailures)
+    equal: ['service']
+
+  # If DB pool is exhausted, don't alert on slow queries
+  - source_match:
+      alertname: DatabaseConnectionPoolExhausted
+    target_match:
+      alertname: SlowDatabaseQueries
+    equal: ['service']
+
+# Receivers define how to send notifications
+receivers:
+  # Default receiver (catches all alerts not matched by routes)
+  - name: 'default'
+    webhook_configs:
+      - url: '${DEFAULT_WEBHOOK_URL}'
+        send_resolved: true
+
+  # PagerDuty for P0 alerts
+  - name: 'pagerduty'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        severity: 'critical'
+        description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+          num_alerts: '{{ .Alerts | len }}'
+
+  # Slack for urgent P1 alerts
+  - name: 'slack-urgent'
+    slack_configs:
+      - channel: '#jingxin-alerts'
+        username: 'Jingxin AlertManager'
+        icon_emoji: ':fire:'
+        title: '{{ .GroupLabels.alertname }} - {{ .GroupLabels.severity }}'
+        title_link: '{{ .CommonAnnotations.runbook_url }}'
+        text: |
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          *Service:* {{ .Labels.service }}
+          {{ end }}
+        color: 'danger'
+        send_resolved: true
+
+  # Slack for P2 warnings
+  - name: 'slack-warnings'
+    slack_configs:
+      - channel: '#jingxin-warnings'
+        username: 'Jingxin AlertManager'
+        icon_emoji: ':warning:'
+        title: '{{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          *Severity:* {{ .Labels.severity }}
+          {{ end }}
+        color: 'warning'
+        send_resolved: true
+
+  # Email for P3 alerts
+  - name: 'email'
+    email_configs:
+      - to: '${ALERT_EMAIL_TO}'
+        from: '${ALERT_EMAIL_FROM}'
+        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+        auth_username: '${SMTP_USERNAME}'
+        auth_password: '${SMTP_PASSWORD}'
+        headers:
+          Subject: '[Jingxin] {{ .GroupLabels.alertname }}'
+        html: |
+          <h3>{{ .GroupLabels.alertname }}</h3>
+          {{ range .Alerts }}
+          <p>
+          <b>Summary:</b> {{ .Annotations.summary }}<br>
+          <b>Description:</b> {{ .Annotations.description }}<br>
+          <b>Severity:</b> {{ .Labels.severity }}<br>
+          <b>Service:</b> {{ .Labels.service }}<br>
+          </p>
+          {{ end }}
+        send_resolved: true

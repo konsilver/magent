@@ -1,0 +1,81 @@
+"""Unified display-name mappings for tools and MCP servers.
+
+Single source of truth — every module that needs a Chinese display name
+for a tool or server should import from here.
+"""
+
+from __future__ import annotations
+
+from typing import Dict
+
+# ── MCP 服务器级别名称 ────────────────────────────────────────────────────────
+
+# MCP 服务器 ID → 中文名称（用于能力中心面板标题）
+MCP_SERVER_DISPLAY_NAMES: Dict[str, str] = {
+    "query_database":            "数据库查询",
+    "retrieve_dataset_content":  "知识库检索",
+    "internet_search":           "互联网搜索",
+    "ai_chain_information_mcp":  "产业知识中心查询",
+    "generate_chart_tool":       "数据可视化",
+    "report_export_mcp":         "报告导出",
+    "web_fetch":                 "网站信息抓取",
+}
+
+# MCP 服务器 ID → 一句话功能描述（用于能力中心面板描述文字）
+MCP_SERVER_DESCRIPTIONS: Dict[str, str] = {
+    "query_database":            "查询数据仓库中的行业指标与统计数值，支持自然语言提问直接获取精确数据。",
+    "retrieve_dataset_content":  "从公有/私有知识库中语义检索政策文件、产业报告及用户上传文档，支持混合检索与重排序。",
+    "internet_search":           "通过互联网实时搜索公开网页、新闻及财经资讯，作为数据库与知识库之外的信息兜底。",
+    "ai_chain_information_mcp":  "获取产业链全景分析报告、核心数据指标、产业动态资讯、AI 领域热点聚合及企业画像查询。",
+    "generate_chart_tool":       "根据给定数据调用 Python 生成柱状图、折线图、饼图等可视化图表，结果以图片形式直接展示。",
+    "report_export_mcp":         "将 Markdown 格式的分析报告导出为 Word 文档，或将表格数据导出为 Excel 文件供下载。",
+    "web_fetch":                 "抓取指定网页 URL 的内容，提取正文文本或 Markdown，支持搜索引擎结果页解析。",
+}
+
+# ── 工具函数级别名称 ──────────────────────────────────────────────────────────
+
+# 工具函数名 → 中文显示名（用于对话框工具卡片 + 流式事件）
+TOOL_DISPLAY_NAMES: Dict[str, str] = {
+    # MCP 工具
+    "query_database":             "数据库查询",
+    "retrieve_dataset_content":   "公有知识库检索",
+    "retrieve_local_kb":          "私有知识库检索",
+    "list_datasets":              "查看知识库列表",
+    "internet_search":            "互联网搜索",
+    "get_chain_information":      "产业链分析",
+    "get_industry_news":          "产业资讯",
+    "get_latest_ai_news":         "AI 热点聚合",
+    "search_company":             "企业搜索",
+    "get_company_base_info":      "企业基本信息",
+    "get_company_business_analysis": "企业经营分析",
+    "get_company_tech_insight":   "企业技术洞察",
+    "get_company_funding":        "企业资金穿透",
+    "get_company_risk_warning":   "企业风险预警",
+    "generate_chart_tool":        "数据可视化",
+    "export_report_to_docx":      "导出 Word 报告",
+    "export_table_to_excel":      "导出 Excel 表格",
+    # 产业链 bundle 子工具（workflow.py 旧映射）
+    "get_ai_chain_information":   "区块链信息查询",
+    "get_latest_ai_chain_info":   "最新区块链动态",
+    "get_ai_chain_news":          "区块链新闻搜索",
+    # 内置工具
+    "get_skills":                 "查询可用技能",
+    "get_agents":                 "查询可用智能体",
+    "get_mcp_tools":              "查询 MCP 工具列表",
+    "search_knowledge_base":      "知识库搜索",
+    # 子智能体调度
+    "call_subagent":              "调用子智能体",
+    # 技能系统
+    "view_text_file":             "读取文件",
+    "web_fetch":                  "网页抓取",
+    # 跨轮文件访问
+    "read_artifact":              "读取文件内容",
+    # 代码执行 Lab 工具
+    "execute_code":               "代码执行",
+    "run_command":                "执行命令",
+    # 我的空间访问工具（代码执行模式）
+    "list_myspace_files":         "浏览我的空间",
+    "stage_myspace_file":         "导入文件到工作区",
+    "list_favorite_chats":        "浏览收藏会话",
+    "get_chat_messages":          "读取会话记录",
+}

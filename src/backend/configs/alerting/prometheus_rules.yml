@@ -1,0 +1,308 @@
+# Prometheus alerting rules for Jingxin-Agent
+#
+# This file defines alert rules for monitoring the Jingxin-Agent service.
+# Severity levels:
+#   P0 - Critical: Immediate action required (page on-call)
+#   P1 - High: Action required within 30 minutes
+#   P2 - Medium: Action required within 2 hours
+#   P3 - Low: Action required within 1 day
+
+groups:
+  - name: jingxin_http_errors
+    interval: 30s
+    rules:
+      # High 5xx error rate
+      - alert: HighServerErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status="5xx"}[5m])) /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: P1
+          service: jingxin-agent
+          category: availability
+        annotations:
+          summary: "High 5xx error rate detected"
+          description: |
+            The 5xx error rate is {{ $value | humanizePercentage }} over the last 5 minutes.
+            Threshold: 1%
+            Current rate: {{ $value | humanizePercentage }}
+          runbook_url: "https://docs.jingxin.io/runbook#high-5xx-errors"
+
+      # High 4xx error rate (potential attack or misconfiguration)
+      - alert: HighClientErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status="4xx"}[10m])) /
+            sum(rate(http_requests_total[10m]))
+          ) > 0.10
+        for: 10m
+        labels:
+          severity: P2
+          service: jingxin-agent
+          category: quality
+        annotations:
+          summary: "High 4xx error rate detected"
+          description: |
+            The 4xx error rate is {{ $value | humanizePercentage }} over the last 10 minutes.
+            This may indicate client issues or an attack.
+            Threshold: 10%
+            Current rate: {{ $value | humanizePercentage }}
+          runbook_url: "https://docs.jingxin.io/runbook#high-4xx-errors"
+
+      # High request latency
+      - alert: HighRequestLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 5
+        for: 5m
+        labels:
+          severity: P2
+          service: jingxin-agent
+          category: performance
+        annotations:
+          summary: "High request latency on {{ $labels.endpoint }}"
+          description: |
+            P95 latency is {{ $value }}s for endpoint {{ $labels.endpoint }}.
+            Threshold: 5s
+            Current P95: {{ $value }}s
+          runbook_url: "https://docs.jingxin.io/runbook#high-latency"
+
+  - name: jingxin_model_api
+    interval: 30s
+    rules:
+      # Model API errors
+      - alert: ModelAPIErrors
+        expr: |
+          rate(model_api_requests_total{status="error"}[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: P1
+          service: jingxin-agent
+          category: integration
+        annotations:
+          summary: "High model API error rate"
+          description: |
+            Model API error rate is {{ $value }} requests/second for {{ $labels.model }}.
+            This may cause chat functionality to fail.
+            Threshold: 0.05 req/s
+            Current rate: {{ $value }} req/s
+          runbook_url: "https://docs.jingxin.io/runbook#model-api-errors"
+
+      # Model API timeout
+      - alert: ModelAPITimeout
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(model_api_duration_seconds_bucket[5m])) by (le, model)
+          ) > 30
+        for: 5m
+        labels:
+          severity: P2
+          service: jingxin-agent
+          category: performance
+        annotations:
+          summary: "Model API timeout on {{ $labels.model }}"
+          description: |
+            P95 latency for {{ $labels.model }} is {{ $value }}s.
+            Threshold: 30s
+            Current P95: {{ $value }}s
+          runbook_url: "https://docs.jingxin.io/runbook#model-api-timeout"
+
+  - name: jingxin_database
+    interval: 30s
+    rules:
+      # Database connection pool exhaustion
+      - alert: DatabaseConnectionPoolExhausted
+        expr: db_connections{state="active"} > 45
+        for: 1m
+        labels:
+          severity: P0
+          service: jingxin-agent
+          category: resources
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: |
+            Active database connections: {{ $value }}/50
+            Service may become unresponsive soon.
+            Threshold: 45 connections
+            Current: {{ $value }} connections
+          runbook_url: "https://docs.jingxin.io/runbook#db-pool-exhausted"
+
+      # Database query slow
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le, table)
+          ) > 1
+        for: 5m
+        labels:
+          severity: P2
+          service: jingxin-agent
+          category: performance
+        annotations:
+          summary: "Slow database queries on {{ $labels.table }}"
+          description: |
+            P95 query duration for {{ $labels.table }} is {{ $value }}s.
+            Threshold: 1s
+            Current P95: {{ $value }}s
+          runbook_url: "https://docs.jingxin.io/runbook#slow-queries"
+
+      # Database errors
+      - alert: DatabaseErrors
+        expr: |
+          rate(db_errors_total[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: P1
+          service: jingxin-agent
+          category: reliability
+        annotations:
+          summary: "High database error rate"
+          description: |
+            Database error rate is {{ $value }} errors/second.
+            Threshold: 0.1 errors/s
+            Current rate: {{ $value }} errors/s
+          runbook_url: "https://docs.jingxin.io/runbook#db-errors"
+
+  - name: jingxin_sse
+    interval: 30s
+    rules:
+      # High SSE connection count
+      - alert: HighSSEConnections
+        expr: sse_active_connections > 1000
+        for: 5m
+        labels:
+          severity: P2
+          service: jingxin-agent
+          category: resources
+        annotations:
+          summary: "Abnormally high SSE connection count"
+          description: |
+            Active SSE connections: {{ $value }}
+            This may indicate a connection leak or unusual load.
+            Threshold: 1000 connections
+            Current: {{ $value }} connections
+          runbook_url: "https://docs.jingxin.io/runbook#high-sse-connections"
+
+      # High SSE error rate
+      - alert: HighSSEErrorRate
+        expr: |
+          rate(sse_errors_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: P2
+          service: jingxin-agent
+          category: quality
+        annotations:
+          summary: "High SSE error rate"
+          description: |
+            SSE error rate is {{ $value }} errors/second.
+            Users may experience chat interruptions.
+            Threshold: 0.5 errors/s
+            Current rate: {{ $value }} errors/s
+          runbook_url: "https://docs.jingxin.io/runbook#sse-errors"
+
+  - name: jingxin_user_center
+    interval: 30s
+    rules:
+      # User center integration failures
+      - alert: UserCenterIntegrationFailure
+        expr: |
+          (
+            sum(rate(user_center_requests_total{status!="200"}[5m])) /
+            sum(rate(user_center_requests_total[5m]))
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: P1
+          service: jingxin-agent
+          category: integration
+        annotations:
+          summary: "User center integration failure rate high"
+          description: |
+            User center failure rate is {{ $value | humanizePercentage }}.
+            Authentication and authorization may be affected.
+            Threshold: 5%
+            Current rate: {{ $value | humanizePercentage }}
+          runbook_url: "https://docs.jingxin.io/runbook#user-center-failure"
+
+  - name: jingxin_storage
+    interval: 30s
+    rules:
+      # Storage operation failures
+      - alert: StorageOperationFailures
+        expr: |
+          rate(storage_errors_total[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: P2
+          service: jingxin-agent
+          category: integration
+        annotations:
+          summary: "High storage operation failure rate"
+          description: |
+            Storage error rate is {{ $value }} errors/second.
+            File uploads/downloads may be affected.
+            Threshold: 0.1 errors/s
+            Current rate: {{ $value }} errors/s
+          runbook_url: "https://docs.jingxin.io/runbook#storage-errors"
+
+  - name: jingxin_circuit_breakers
+    interval: 30s
+    rules:
+      # Circuit breaker open
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state{state="1"} == 1
+        for: 2m
+        labels:
+          severity: P1
+          service: jingxin-agent
+          category: reliability
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.service }}"
+          description: |
+            Circuit breaker for {{ $labels.service }} is OPEN.
+            Requests to this service are being rejected.
+          runbook_url: "https://docs.jingxin.io/runbook#circuit-breaker-open"
+
+  - name: jingxin_rate_limiting
+    interval: 30s
+    rules:
+      # High rate limit exceeded count
+      - alert: HighRateLimitExceeded
+        expr: |
+          rate(rate_limit_exceeded_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: P3
+          service: jingxin-agent
+          category: security
+        annotations:
+          summary: "High rate of rate limit exceeded events"
+          description: |
+            Rate limiting is being triggered {{ $value }} times/second.
+            This may indicate abuse or legitimate traffic surge.
+            Threshold: 10 events/s
+            Current rate: {{ $value }} events/s
+          runbook_url: "https://docs.jingxin.io/runbook#rate-limit-exceeded"
+
+  - name: jingxin_service_health
+    interval: 30s
+    rules:
+      # Service down
+      - alert: ServiceDown
+        expr: up{job="jingxin-agent"} == 0
+        for: 1m
+        labels:
+          severity: P0
+          service: jingxin-agent
+          category: availability
+        annotations:
+          summary: "Jingxin-Agent service is down"
+          description: |
+            The Jingxin-Agent service is not responding to health checks.
+            Immediate action required.
+          runbook_url: "https://docs.jingxin.io/runbook#service-down"

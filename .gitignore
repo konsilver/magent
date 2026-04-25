@@ -1,0 +1,134 @@
+/xdevfiles
+
+# Runtime-generated catalog (synced from DB + filesystem at startup)
+src/backend/configs/catalog.json
+
+# Test results
+src/frontend/test-results/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.bak.*
+.env.prod
+.env.dev
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.log
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+dev/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+docker/
+output/
+images/
+logs/
+result/
+.claude/
+
+# MCP servers (if needed)
+# mcp_servers/**/*.pyc
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.bak
+.cache/
+
+# Docker
+docker-compose.override.yml
+.docker/
+*.dockerignore.bak
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+jingxin_dev.db
+jingxin_test.db
+
+# Storage
+uploads/
+backups/
+
+# Monitoring & Logs
+prometheus_data/
+grafana_data/
+jaeger_data/
+alertmanager_data/
+
+# Release & Deployment
+.env.prod
+.env.production
+.env.staging
+deployment-config.local.yml
+secrets.yml
+
+# CI/CD
+.github/secrets/
+
+# Version control
+*.orig
+
+# ossconfig
+ossfs2.conf
+
+# offline docker 
+*.tar
+*.tar.gz
+*.tar.gzsdafa
+
+# docker
+docker/
+
+# claude file
+CLAUDE.md
+
+# images
+img/
+
+# jingxin skills
+.jingxin/
+
+# codex
+.codex

@@ -1,0 +1,11 @@
+/* ── Config platform styles ── */
+
+/* Session list item hover */
+.ant-list-item:hover {
+  background: #fafafa;
+}
+
+/* Message card left border highlight */
+.config-message-item {
+  margin-bottom: 12px;
+}

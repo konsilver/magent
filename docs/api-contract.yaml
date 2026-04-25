@@ -1,0 +1,949 @@
+openapi: 3.0.3
+info:
+  title: Jingxin-Agent API
+  version: 1.0.0
+  description: |
+    Jingxin-Agent 智能对话系统 API 规范
+
+    **基础信息**:
+    - Base URL: `https://api.jingxin.example.com`
+    - 认证方式: Bearer Token
+    - 响应格式: JSON (除 SSE 流式接口外)
+
+    **版本控制**:
+    - v1: 当前稳定版本
+
+servers:
+  - url: https://api.jingxin.example.com
+    description: Production
+  - url: https://staging-api.jingxin.example.com
+    description: Staging
+  - url: http://localhost:3001
+    description: Local Development
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Chat
+    description: 聊天对话接口
+  - name: Sessions
+    description: 会话管理接口
+  - name: Catalog
+    description: 能力中心接口
+  - name: Knowledge Base
+    description: 知识库接口
+  - name: Files
+    description: 文件管理接口
+  - name: Users
+    description: 用户管理接口
+
+paths:
+  # ==================== Chat APIs ====================
+  /chat:
+    post:
+      tags: [Chat]
+      summary: 非流式聊天 (兼容接口)
+      description: 发送消息并等待完整响应，兼容旧版前端
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                chat_id:
+                  type: string
+                  description: 会话 ID，不提供则创建新会话
+                  example: "chat_001"
+                message:
+                  type: string
+                  description: 用户消息
+                  example: "介绍一下人工智能的发展历史"
+                model_name:
+                  type: string
+                  description: 模型名称
+                  default: "gpt-4"
+                  example: "gpt-4"
+                context:
+                  type: object
+                  description: 额外上下文
+                  properties:
+                    user_id:
+                      type: string
+                    preferences:
+                      type: object
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          chat_id:
+                            type: string
+                          response:
+                            type: string
+                          model:
+                            type: string
+                          usage:
+                            $ref: '#/components/schemas/ModelUsage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /chat/stream:
+    post:
+      tags: [Chat]
+      summary: 流式聊天 (主要接口)
+      description: 发送消息并通过 SSE 接收流式响应
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                chat_id:
+                  type: string
+                message:
+                  type: string
+                model_name:
+                  type: string
+                  default: "gpt-4"
+      responses:
+        '200':
+          description: SSE 流式响应
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE 事件流，包含以下事件类型：
+                  - message: 普通消息 (token/tool_use/tool_result/thinking/metadata)
+                  - error: 错误事件
+                  - done: 结束事件
+              example: |
+                event: message
+                data: {"type":"token","content":"你好","delta":true}
+
+                event: message
+                data: {"type":"tool_use","tool":"search","args":{"query":"AI"}}
+
+                event: message
+                data: {"type":"tool_result","tool":"search","result":{...}}
+
+                event: message
+                data: {"type":"token","content":"根据搜索...","delta":true}
+
+                event: done
+                data: [DONE]
+
+  # ==================== Session Management APIs ====================
+  /v1/chats:
+    get:
+      tags: [Sessions]
+      summary: 获取会话列表
+      description: 分页获取当前用户的聊天会话列表
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: "-updated_at"
+            enum: ["-updated_at", "updated_at", "-created_at", "created_at"]
+        - name: filter
+          in: query
+          schema:
+            type: string
+            description: 过滤条件 (如 "pinned=true", "favorite=true")
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ChatSession'
+                          pagination:
+                            $ref: '#/components/schemas/Pagination'
+
+    post:
+      tags: [Sessions]
+      summary: 创建新会话
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: "新对话"
+                metadata:
+                  type: object
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ChatSession'
+
+  /v1/chats/{chat_id}:
+    get:
+      tags: [Sessions]
+      summary: 获取会话详情
+      parameters:
+        - $ref: '#/components/parameters/ChatId'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ChatSession'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags: [Sessions]
+      summary: 更新会话
+      parameters:
+        - $ref: '#/components/parameters/ChatId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                pinned:
+                  type: boolean
+                favorite:
+                  type: boolean
+                metadata:
+                  type: object
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+    delete:
+      tags: [Sessions]
+      summary: 删除会话
+      parameters:
+        - $ref: '#/components/parameters/ChatId'
+      responses:
+        '204':
+          description: 删除成功
+
+  /v1/chats/{chat_id}/messages:
+    get:
+      tags: [Sessions]
+      summary: 获取会话消息列表
+      parameters:
+        - $ref: '#/components/parameters/ChatId'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ChatMessage'
+                          pagination:
+                            $ref: '#/components/schemas/Pagination'
+
+  /v1/chats/search:
+    get:
+      tags: [Sessions]
+      summary: 搜索会话
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 搜索关键词
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ChatSession'
+                          total:
+                            type: integer
+
+  # ==================== Catalog APIs ====================
+  /v1/catalog:
+    get:
+      tags: [Catalog]
+      summary: 获取能力目录
+      description: 获取所有可用的 skills、agents、MCP servers 列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          skills:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/CatalogItem'
+                          agents:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/CatalogItem'
+                          mcp_servers:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/CatalogItem'
+
+  /v1/catalog/{kind}/{id}:
+    patch:
+      tags: [Catalog]
+      summary: 更新能力配置
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [skill, agent, mcp]
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                config:
+                  type: object
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ==================== Knowledge Base APIs ====================
+  /v1/catalog/kb:
+    post:
+      tags: [Knowledge Base]
+      summary: 创建知识库空间
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: "产品文档库"
+                description:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KBSpace'
+
+  /v1/catalog/kb/{kb_id}/documents:
+    post:
+      tags: [Knowledge Base]
+      summary: 上传文档到知识库
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                title:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        '201':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KBDocument'
+
+    get:
+      tags: [Knowledge Base]
+      summary: 获取知识库文档列表
+      parameters:
+        - name: kb_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/KBDocument'
+                          pagination:
+                            $ref: '#/components/schemas/Pagination'
+
+  # ==================== File APIs ====================
+  /files/{file_id}:
+    get:
+      tags: [Files]
+      summary: 下载文件
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [direct, presigned]
+            default: direct
+          description: |
+            - direct: 直接下载文件
+            - presigned: 返回签名 URL
+      responses:
+        '200':
+          description: 成功 (direct 模式返回文件内容，presigned 模式返回 JSON)
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          download_url:
+                            type: string
+                          expires_at:
+                            type: string
+                            format: date-time
+                          expires_in:
+                            type: integer
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== User APIs ====================
+  /v1/me:
+    get:
+      tags: [Users]
+      summary: 获取当前用户信息
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/User'
+
+  /v1/users/{user_id}/preferences:
+    get:
+      tags: [Users]
+      summary: 获取用户偏好设置
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserPreferences'
+
+    put:
+      tags: [Users]
+      summary: 更新用户偏好设置
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPreferences'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+# ==================== Components ====================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ChatId:
+      name: chat_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: "chat_001"
+
+  schemas:
+    ApiResponse:
+      type: object
+      required: [code, message, trace_id]
+      properties:
+        code:
+          type: integer
+          description: 业务状态码
+          example: 10000
+        message:
+          type: string
+          description: 响应消息
+          example: "Success"
+        data:
+          type: object
+          nullable: true
+          description: 业务数据
+        trace_id:
+          type: string
+          description: 请求追踪 ID
+          example: "req_abc123def456"
+        timestamp:
+          type: integer
+          description: 响应时间戳 (Unix 毫秒)
+          example: 1707811200000
+
+    ChatSession:
+      type: object
+      properties:
+        chat_id:
+          type: string
+          example: "chat_001"
+        title:
+          type: string
+          example: "关于 AI 的讨论"
+        user_id:
+          type: string
+        message_count:
+          type: integer
+        pinned:
+          type: boolean
+        favorite:
+          type: boolean
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ChatMessage:
+      type: object
+      properties:
+        message_id:
+          type: string
+        chat_id:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+        model:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            type: object
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    CatalogItem:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "search_skill"
+        name:
+          type: string
+          example: "互联网搜索"
+        description:
+          type: string
+        enabled:
+          type: boolean
+        config:
+          type: object
+        metadata:
+          type: object
+
+    KBSpace:
+      type: object
+      properties:
+        kb_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        document_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    KBDocument:
+      type: object
+      properties:
+        document_id:
+          type: string
+        kb_id:
+          type: string
+        title:
+          type: string
+        filename:
+          type: string
+        size:
+          type: integer
+        mime_type:
+          type: string
+        storage_key:
+          type: string
+        uploaded_at:
+          type: string
+          format: date-time
+
+    User:
+      type: object
+      properties:
+        user_id:
+          type: string
+        username:
+          type: string
+        email:
+          type: string
+        avatar:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    UserPreferences:
+      type: object
+      properties:
+        default_model:
+          type: string
+          example: "gpt-4"
+        language:
+          type: string
+          example: "zh-CN"
+        theme:
+          type: string
+          enum: [light, dark, auto]
+        enabled_skills:
+          type: array
+          items:
+            type: string
+        enabled_mcps:
+          type: array
+          items:
+            type: string
+
+    ModelUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_items:
+          type: integer
+        total_pages:
+          type: integer
+        has_previous:
+          type: boolean
+        has_next:
+          type: boolean
+
+    ErrorData:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              reason:
+                type: string
+        reason:
+          type: string
+        hint:
+          type: string
+
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 20001
+                  message:
+                    type: string
+                    example: "Invalid request parameters"
+                  data:
+                    $ref: '#/components/schemas/ErrorData'
+
+    Unauthorized:
+      description: 未授权
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 30001
+                  message:
+                    type: string
+                    example: "Authentication required"
+
+    Forbidden:
+      description: 无权限
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 31001
+                  message:
+                    type: string
+                    example: "Access denied"
+
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 40001
+                  message:
+                    type: string
+                    example: "Resource not found"
+
+    InternalServerError:
+      description: 服务器错误
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 50001
+                  message:
+                    type: string
+                    example: "Internal server error"

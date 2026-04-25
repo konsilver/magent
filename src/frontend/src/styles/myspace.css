@@ -1,0 +1,949 @@
+/* ══════════════════════════════════════════
+   My Space (我的空间) Styles
+   Prefix: .jx-mySpace-*
+   ══════════════════════════════════════════ */
+
+.jx-mySpace {
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+}
+
+.jx-mySpace-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.jx-mySpace-header {
+  flex-shrink: 0;
+  padding: 24px 0 0;
+}
+
+.jx-mySpace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.jx-mySpace-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 10px 0 16px;
+  margin-right: 28px;
+  font-family: var(--font-family);
+  font-size: 20px;
+  font-weight: 400;
+  color: #7b8697;
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+
+.jx-mySpace-tab:last-child {
+  margin-right: 0;
+}
+
+.jx-mySpace-tab::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-primary);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.18s ease;
+}
+
+.jx-mySpace-tab:hover {
+  color: #394556;
+}
+
+.jx-mySpace-tab.active {
+  color: #1c2430;
+  font-weight: 500;
+}
+
+.jx-mySpace-tab.active::after {
+  transform: scaleX(1);
+}
+
+.jx-mySpace-tabBadge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #ff5c5c;
+  color: #fff;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  font-family: var(--font-family-number);
+}
+
+.jx-mySpace-subHeader {
+  padding-top: 14px;
+}
+
+.jx-mySpace-subHeader-shares {
+  padding-top: 12px;
+}
+
+.jx-mySpace-desc {
+  margin: 0;
+  color: #7b8697;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.jx-mySpace-assetBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 24px;
+}
+
+.jx-mySpace-assetTabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jx-mySpace-assetChip {
+  appearance: none;
+  border: 1px solid transparent;
+  background: #f1f3f6;
+  color: #5f6c7f;
+  border-radius: 10px;
+  padding: 7px 14px;
+  font-size: 14px;
+  font-family: var(--font-family);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.jx-mySpace-assetChip:hover {
+  color: #334155;
+  background: #edf1f7;
+}
+
+.jx-mySpace-assetChip.active {
+  background: rgba(18, 109, 255, 0.10);
+  color: var(--color-primary);
+  border-color: rgba(18, 109, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(18, 109, 255, 0.02);
+}
+
+.jx-mySpace-filterTools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.jx-mySpace-sourceFilter {
+  min-width: 136px;
+}
+
+.jx-mySpace-sourceFilter .ant-select-selector {
+  height: 40px !important;
+  border-radius: 12px !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  box-shadow: none !important;
+  padding: 0 14px !important;
+}
+
+.jx-mySpace-sourceFilter .ant-select-selection-item {
+  line-height: 38px !important;
+  font-size: 14px !important;
+}
+
+.jx-mySpace-search.ant-input-affix-wrapper {
+  width: 220px;
+  height: 40px;
+  border-radius: 12px;
+  border-color: rgba(148, 163, 184, 0.28);
+  box-shadow: none;
+  padding: 0 12px;
+}
+
+.jx-mySpace-search.ant-input-affix-wrapper:hover,
+.jx-mySpace-search.ant-input-affix-wrapper:focus,
+.jx-mySpace-search.ant-input-affix-wrapper.ant-input-affix-wrapper-focused {
+  border-color: rgba(18, 109, 255, 0.32);
+  box-shadow: 0 0 0 2px rgba(18, 109, 255, 0.06);
+}
+
+.jx-mySpace-search .ant-input {
+  font-size: 14px;
+}
+
+.jx-mySpace-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 0 40px;
+}
+
+.jx-mySpace-docTable {
+  --jx-check-col-width: 18px;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.jx-mySpace-docTable--hasSelection {
+  --jx-check-col-width: 34px;
+}
+
+.jx-mySpace-docTable-header,
+.jx-mySpace-docRow {
+  display: grid;
+  grid-template-columns: var(--jx-check-col-width) minmax(0, 1fr) 96px 112px 156px 44px;
+  align-items: center;
+  transition: grid-template-columns 0.16s ease;
+}
+
+.jx-mySpace-docTable-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 44px;
+  background: #fff;
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.jx-mySpace-docTable-col {
+  min-width: 0;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.jx-mySpace-docTable-col--check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.jx-mySpace-docTable-col--name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jx-mySpace-docTable-col--size,
+.jx-mySpace-docTable-col--source,
+.jx-mySpace-docTable-col--time {
+  color: #8a94a3;
+}
+
+.jx-mySpace-docTable-col--actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.jx-mySpace-docTable-header .jx-mySpace-docTable-col {
+  color: #7b8697;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.jx-mySpace-docTable-header .jx-mySpace-docTable-col--check .ant-checkbox-wrapper {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.jx-mySpace-docTable--hasSelection .jx-mySpace-docTable-header .jx-mySpace-docTable-col--check .ant-checkbox-wrapper {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.jx-mySpace-docRow {
+  min-height: 46px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.88);
+  transition: background 0.16s ease;
+}
+
+.jx-mySpace-docRow:last-child {
+  border-bottom: none;
+}
+
+.jx-mySpace-docRow:hover {
+  background: #f8fafc;
+}
+
+.jx-mySpace-docRow--checked {
+  background: linear-gradient(180deg, rgba(18, 109, 255, 0.08), rgba(18, 109, 255, 0.04));
+}
+
+.jx-mySpace-docRow .jx-mySpace-docTable-col--check .ant-checkbox-wrapper {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.jx-mySpace-docRow:hover .jx-mySpace-docTable-col--check .ant-checkbox-wrapper,
+.jx-mySpace-docRow--anySelected .jx-mySpace-docTable-col--check .ant-checkbox-wrapper {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.jx-mySpace-docRow .ant-checkbox .ant-checkbox-inner,
+.jx-mySpace-docTable-header .ant-checkbox .ant-checkbox-inner {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border-color: #c7d0dc;
+}
+
+.jx-mySpace-docRow .ant-checkbox-checked .ant-checkbox-inner,
+.jx-mySpace-docTable-header .ant-checkbox-checked .ant-checkbox-inner {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.jx-mySpace-docRow-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.jx-mySpace-docRow-nameWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.jx-mySpace-docRow-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 400;
+  color: #283241;
+  transition: color 0.16s ease;
+}
+
+.jx-mySpace-docRow:hover .jx-mySpace-docRow-name,
+.jx-mySpace-docRow--checked .jx-mySpace-docRow-name {
+  color: var(--color-primary);
+}
+
+.jx-mySpace-docRow-meta,
+.jx-mySpace-docRow-time {
+  font-size: 14px;
+  color: #465262;
+  white-space: nowrap;
+}
+
+.jx-mySpace-kbBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  background: #fff;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
+}
+
+.jx-mySpace-kbBadge:hover {
+  color: var(--color-primary);
+  border-color: rgba(18, 109, 255, 0.18);
+  background: rgba(18, 109, 255, 0.04);
+}
+
+.jx-mySpace-kbUsageOverlay .ant-popover-inner {
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.jx-mySpace-kbUsagePopover {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.jx-mySpace-kbUsageItem {
+  font-size: 13px;
+  color: #475569;
+}
+
+.jx-mySpace-moreBtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: #8a94a3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.jx-mySpace-docRow:hover .jx-mySpace-moreBtn,
+.jx-mySpace-docRow--checked .jx-mySpace-moreBtn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.jx-mySpace-moreBtn:hover {
+  background: #edf2f7;
+  color: #334155;
+}
+
+@keyframes jx-bulkBar-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.jx-mySpace-bulkBar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: min(920px, calc(100vw - 48px));
+  min-height: 56px;
+  padding: 10px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  background: #fff;
+  box-shadow:
+    0 2px 10px rgba(15, 23, 42, 0.06),
+    0 18px 42px rgba(15, 23, 42, 0.12);
+  animation: jx-bulkBar-in 0.2s ease both;
+}
+
+.jx-mySpace-bulkBar-count {
+  margin-right: 2px;
+  color: #7b8697;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.jx-mySpace-bulkBar-divider {
+  width: 1px;
+  height: 22px;
+  background: rgba(226, 232, 240, 0.96);
+}
+
+.jx-mySpace-bulkBar-btn {
+  appearance: none;
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #fff;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #334155;
+  font-size: 14px;
+  font-family: var(--font-family);
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.jx-mySpace-bulkBar-btn:hover {
+  border-color: rgba(18, 109, 255, 0.18);
+  color: var(--color-primary);
+  background: rgba(18, 109, 255, 0.04);
+}
+
+.jx-mySpace-bulkBar-btn--danger {
+  color: var(--color-error);
+}
+
+.jx-mySpace-bulkBar-btn--danger:hover {
+  border-color: rgba(252, 93, 93, 0.22);
+  color: var(--color-error);
+  background: rgba(252, 93, 93, 0.06);
+}
+
+.jx-mySpace-bulkBar-btn--cancel {
+  color: #7b8697;
+}
+
+.jx-mySpace-bulkBar-btn--cancel:hover {
+  color: #475569;
+  background: #f8fafc;
+  border-color: rgba(203, 213, 225, 0.92);
+}
+
+.jx-mySpace-actionBtn {
+  border: none;
+  background: none;
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s, background 0.15s;
+  font-family: var(--font-family);
+}
+
+.jx-mySpace-actionBtn:hover {
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.jx-mySpace-actionBtn--danger:hover {
+  color: var(--color-error);
+  background: var(--color-error-light);
+}
+
+.jx-mySpace-imgGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.jx-mySpace-imgItem {
+  position: relative;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.jx-mySpace-imgCell {
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--color-bg-gray);
+  position: relative;
+}
+
+.jx-mySpace-imgThumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.2s;
+}
+
+.jx-mySpace-imgCell:hover .jx-mySpace-imgThumb {
+  transform: scale(1.05);
+}
+
+.jx-mySpace-imgPlaceholder,
+.jx-mySpace-imgCell--error::after {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-placeholder);
+}
+
+.jx-mySpace-imgCell--error::after {
+  content: '加载失败';
+  position: absolute;
+  inset: 0;
+}
+
+.jx-mySpace-imgOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, .45);
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.jx-mySpace-imgItem:hover .jx-mySpace-imgOverlay {
+  opacity: 1;
+}
+
+.jx-mySpace-imgOverlay .jx-mySpace-actionBtn {
+  color: #fff;
+  font-size: 16px;
+}
+
+.jx-mySpace-imgOverlay .jx-mySpace-actionBtn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, .2);
+}
+
+.jx-mySpace-imgOverlay .jx-mySpace-actionBtn--danger:hover {
+  color: #fff;
+  background: rgba(220, 53, 69, .6);
+}
+
+.jx-mySpace-favList {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jx-mySpace-favCard {
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 28px rgba(15, 23, 42, 0.04);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.jx-mySpace-favCard:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 16px 36px rgba(15, 23, 42, 0.08);
+}
+
+.jx-mySpace-favCard--removing {
+  opacity: 0;
+  transform: translateX(24px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.jx-mySpace-favHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.jx-mySpace-favSource {
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.jx-mySpace-favTime {
+  color: #94a3b8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.jx-mySpace-favPreview {
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.75;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.jx-mySpace-favActions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.jx-mySpace-favActions .jx-mySpace-actionBtn {
+  width: auto;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
+  color: #475569;
+  background: #f8fafc;
+}
+
+.jx-mySpace-favActions .jx-mySpace-actionBtn:hover {
+  background: #eef4ff;
+  color: var(--color-primary);
+}
+
+.jx-mySpace-favActions .jx-mySpace-actionBtn--danger:hover {
+  color: var(--color-error);
+  background: rgba(252, 93, 93, 0.08);
+}
+
+.jx-mySpace-kbPicker {
+  padding: 8px 0;
+}
+
+.jx-mySpace-kbPickerText {
+  margin-bottom: 12px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.jx-mySpace-kbPickerSelect {
+  width: 100%;
+}
+
+.jx-mySpace-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  border: 1px dashed rgba(203, 213, 225, 0.9);
+  border-radius: 20px;
+  background: #fff;
+  text-align: center;
+}
+
+.jx-mySpace-emptyIcon {
+  margin-bottom: 12px;
+  opacity: 0.54;
+}
+
+.jx-mySpace-emptyText {
+  color: #475569;
+  font-size: 16px;
+}
+
+.jx-mySpace-emptyHint {
+  margin-top: 6px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.jx-mySpace-loading,
+.jx-mySpace-loadMore {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 0;
+}
+
+.jx-mySpace-noMore {
+  padding: 20px 0 0;
+  color: #94a3b8;
+  font-size: 13px;
+  text-align: center;
+}
+
+.jx-mySpace-notifList {
+  padding-top: 4px;
+}
+
+.jx-mySpace-notifActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.jx-mySpace-notifActions-label {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.jx-mySpace-notifActions-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jx-mySpace-notifCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px;
+  margin-bottom: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.jx-mySpace-notifCard:hover {
+  border-color: rgba(18, 109, 255, 0.18);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+}
+
+.jx-mySpace-notifCard--unread {
+  background: linear-gradient(180deg, rgba(18, 109, 255, 0.05), rgba(255, 255, 255, 0.94));
+}
+
+.jx-mySpace-notifCard--selected {
+  border-color: rgba(18, 109, 255, 0.24);
+  background: rgba(18, 109, 255, 0.08);
+}
+
+.jx-mySpace-notifCard-left {
+  width: 20px;
+  padding-top: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.jx-mySpace-notifDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff5c5c;
+}
+
+.jx-mySpace-notifCard-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.jx-mySpace-notifCard-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.jx-mySpace-notifCard-name {
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.jx-mySpace-notifCard-summary {
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.7;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.jx-mySpace-notifCard-time {
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.jx-mySpace-notifCard-deleteBtn {
+  appearance: none;
+  border: none;
+  background: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: #94a3b8;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.jx-mySpace-notifCard:hover .jx-mySpace-notifCard-deleteBtn {
+  opacity: 1;
+}
+
+.jx-mySpace-notifCard-deleteBtn:hover {
+  color: var(--color-error);
+  background: rgba(252, 93, 93, 0.08);
+}
+
+@media (max-width: 1100px) {
+  .jx-mySpace-shell {
+    max-width: none;
+  }
+
+  .jx-mySpace-imgGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .jx-mySpace-header {
+    padding-top: 8px;
+  }
+
+  .jx-mySpace-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .jx-mySpace-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .jx-mySpace-tab {
+    flex-shrink: 0;
+    margin-right: 22px;
+    font-size: 17px;
+  }
+
+  .jx-mySpace-assetBar,
+  .jx-mySpace-filterTools {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .jx-mySpace-search.ant-input-affix-wrapper,
+  .jx-mySpace-sourceFilter {
+    width: 100%;
+  }
+
+  .jx-mySpace-docTable-header,
+  .jx-mySpace-docRow {
+    grid-template-columns: var(--jx-check-col-width) minmax(0, 1fr) 80px 96px 132px 36px;
+  }
+
+  .jx-mySpace-imgGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .jx-mySpace-bulkBar {
+    width: calc(100vw - 24px);
+    bottom: 12px;
+    padding: 12px;
+  }
+
+  .jx-mySpace-bulkBar-divider {
+    display: none;
+  }
+}
