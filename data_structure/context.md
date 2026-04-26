@@ -11,12 +11,15 @@
 
     "steps": [
         {
-        "step_id": 1,
-        //任务描述
-        "description": "..."
-        //对应subagent的输出结果写在这里,注意要经过QA check成功后再写
-        "output": "..."
+            "step_id": 1,
+            //任务描述
+            "description": "...",
+            //对应subagent的输出结果写在这里,注意要经过QA check成功后再写
+            "output": "...",
+            //QA检查当前step需要REDO后，把失败经验填充到这里，否则为空
+            "risk": "..."
         }
+        
     ]
 }
 
@@ -48,3 +51,6 @@
         }
     ],
 }
+
+
+

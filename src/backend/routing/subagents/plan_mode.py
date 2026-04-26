@@ -63,7 +63,7 @@ def _make_context_board() -> Dict[str, Any]:
         },
         "plan": {
             "user_goal": None,
-            "steps": [],      # list of {step_id, description, output}
+            "steps": [],      # list of {step_id, description, output, risk}
         },
         "check": {
             "global_constraints": [],
@@ -83,6 +83,58 @@ def _context_board_summary(board: Dict[str, Any]) -> str:
         "check": board.get("check", {}),
     }
     return json.dumps(public, ensure_ascii=False, indent=2)
+
+
+def _build_plan_context_prompt_section(
+    board: Dict[str, Any],
+    step: Any,
+    total_steps: int,
+) -> str:
+    """Build a system-level context section injected into subagent sys_prompt.
+
+    Injects: overall goal, current step position, completed step outputs,
+    global constraints, and explicit assumptions from the context board.
+    Only uses the public board fields (user/plan/check), not only_qa.
+    """
+    lines = ["## 计划模式执行上下文（系统注入）"]
+
+    user_goal = board.get("plan", {}).get("user_goal") or ""
+    if user_goal:
+        lines.append(f"**整体任务目标**: {user_goal}")
+
+    lines.append(f"**当前步骤**: 第 {step.step_order}/{total_steps} 步 — {step.title}")
+
+    completed_steps = [
+        s for s in board.get("plan", {}).get("steps", [])
+        if s.get("output") is not None
+    ]
+    if completed_steps:
+        lines.append("\n**已完成步骤结果**:")
+        for s in completed_steps:
+            sid = s.get("step_id", "?")
+            desc = (s.get("description", "") or "")[:80]
+            output = str(s.get("output", ""))[:200]
+            lines.append(f"- {sid} ({desc}): {output}")
+
+    global_constraints = board.get("check", {}).get("global_constraints", [])
+    if global_constraints:
+        lines.append("\n**全局约束（所有步骤必须遵守）**:")
+        for c in global_constraints:
+            constraint = c.get("constraint", "")
+            ctype = c.get("type", "")
+            if constraint:
+                lines.append(f"- [{ctype}] {constraint}")
+
+    assumptions = board.get("check", {}).get("assumptions", [])
+    if assumptions:
+        lines.append("\n**显式假设**:")
+        for a in assumptions:
+            if a:
+                lines.append(f"- {a}")
+
+    lines.append("\n你是该计划的执行 agent，只负责当前步骤，不执行其他步骤的任务。")
+
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -300,15 +352,141 @@ def _terminate_mcp_processes(mcp_clients: list) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Memory helpers  (all disabled — fields left empty)
+# Memory helpers — backed by core/llm/memory.py (Mem0 + Milvus).
+# All functions degrade silently when MEM0_ENABLED=false or Milvus is down.
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _mem0_enabled() -> bool:
+    try:
+        from core.llm.memory import MEM0_ENABLED
+        return MEM0_ENABLED
+    except Exception:
+        return False
+
+
 async def _retrieve_plan_memory(user_id: str, task_description: str) -> Dict[str, Any]:
-    return {"similar_tasks": [], "failure_patterns": []}
+    """Search KV memory for similar historical plans and failure patterns.
+
+    Planner reads this before making a plan; warmup agent reuses the result.
+    Returns {"similar_tasks": [...], "failure_patterns": [...]}.
+    """
+    if not _mem0_enabled() or not user_id:
+        return {"similar_tasks": [], "failure_patterns": []}
+    try:
+        from core.llm.memory import retrieve_memories
+        # Retrieve top-8 as per read.md spec (Plan module, top k=8)
+        raw = await retrieve_memories(user_id, task_description, limit=8, min_score=0.4)
+        if not raw:
+            return {"similar_tasks": [], "failure_patterns": []}
+
+        similar_tasks: List[str] = []
+        failure_patterns: List[str] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("##"):
+                continue
+            text = line.lstrip("- ").strip()
+            if not text:
+                continue
+            if "[失败" in text or "fail" in text.lower() or "失败模式" in text:
+                failure_patterns.append(text)
+            else:
+                similar_tasks.append(text)
+
+        return {"similar_tasks": similar_tasks[:8], "failure_patterns": failure_patterns[:4]}
+    except Exception as exc:
+        logger.debug("[Memory] plan memory retrieval failed (non-critical): %s", exc)
+        return {"similar_tasks": [], "failure_patterns": []}
 
 
 async def _retrieve_step_memory(user_id: str, step_description: str) -> Dict[str, Any]:
-    return {"relevant_patterns": []}
+    """Search KV memory for relevant execution patterns for a single step.
+
+    SubAgent reads this before executing its step.
+    Returns {"relevant_patterns": [...]}.
+    """
+    if not _mem0_enabled() or not user_id:
+        return {"relevant_patterns": []}
+    try:
+        from core.llm.memory import retrieve_memories
+        # top k=4 as per read.md spec (Task Execution module)
+        raw = await retrieve_memories(user_id, step_description, limit=4, min_score=0.45)
+        if not raw:
+            return {"relevant_patterns": []}
+
+        patterns: List[str] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("##"):
+                continue
+            text = line.lstrip("- ").strip()
+            if text:
+                patterns.append(text)
+
+        return {"relevant_patterns": patterns[:4]}
+    except Exception as exc:
+        logger.debug("[Memory] step memory retrieval failed (non-critical): %s", exc)
+        return {"relevant_patterns": []}
+
+
+# ── LLM prompts for memory distillation ──────────────────────────────────────
+
+_PLAN_MEMORY_DISTILL_PROMPT = """你是记忆管理助手，负责从一次计划执行的完整记录中提取可复用的规划经验。
+
+## 任务目标
+{user_goal}
+
+## 计划步骤（按序）
+{steps_desc}
+
+## 执行结果
+状态: {status}
+质量评分: {quality_score}
+失败类型: {failure_type}
+
+## 你的任务
+用一句话（不超过100字）总结这个计划的"分解策略"，聚焦于任务是如何被拆解的，不涉及执行细节。
+然后输出以下 JSON（不要输出其他内容）：
+{{
+  "skeleton_description": "一句话描述分解策略",
+  "task_type": "研究分析|代码开发|数据处理|问题解答|其他",
+  "failure_type": "missing_step|wrong_order|over_decomposed|goal_mismatch|none"
+}}"""
+
+_STEP_MEMORY_JUDGE_PROMPT = """你是记忆管理助手，判断某次子任务执行经验是否值得存入记忆供未来参考。
+
+## 子任务描述
+{step_description}
+
+## 执行结果摘要
+{result_summary}
+
+## 失败风险记录（如有）
+{risk}
+
+判断标准：这条经验在"不同任务但相似 step"中能否被复用？
+如果能，请用一句话（不超过80字）提炼出可复用的执行洞见（insight），包括遇到了什么问题、怎么解决的。
+如果不能，直接输出 {{"reusable": false}}。
+
+只输出 JSON：
+{{"reusable": true, "insight": "..."}} 或 {{"reusable": false}}"""
+
+_USER_PROFILE_MERGE_PROMPT = """你是用户特征管理助手，负责合并两份用户特征数据。
+
+## 从记忆中检索到的历史特征（mem）
+{mem}
+
+## 从最新 query 提取的即时特征（urgent）
+{urgent}
+
+## 合并规则
+1. 如果 urgent 与 mem 有冲突（同类信息不一致），以 urgent 为准覆盖
+2. 如果两者不重叠，把 urgent 的新特征补充进来
+3. 不要重复存储相同含义的信息
+4. 最终输出合并后的特征列表，每条是一个独立事实
+
+只输出 JSON：
+{{"facts": ["特征1", "特征2", ...]}}"""
 
 
 def _save_task_memory_background(
@@ -322,7 +500,34 @@ def _save_task_memory_background(
     forced: bool,
     key_constraints: List[str],
 ) -> None:
-    return
+    """Fire-and-forget: distill and save plan skeleton to KV memory after execution."""
+    if not _mem0_enabled() or not user_id:
+        return
+
+    async def _save() -> None:
+        try:
+            from core.llm.memory import save_conversation
+            status_str = "success" if (success and not forced) else ("forced" if forced else "fail")
+            steps_desc = "\n".join(f"{i+1}. {s}" for i, s in enumerate(plan_steps))
+
+            # Use the LLM-free save path: encode experience as a conversation pair
+            # mem0 will extract facts automatically via its fact extraction LLM
+            user_msg = f"执行了一个计划任务：{user_goal}\n步骤：{steps_desc}"
+            assistant_msg = (
+                f"计划执行{status_str}，质量评分 {quality_score:.2f}。"
+                f"{'失败原因：' + failure_reason if failure_reason else ''}"
+                f"关键约束：{'; '.join(key_constraints[:3]) if key_constraints else '无'}。"
+                f"结果摘要：{final_solution_summary[:200] if final_solution_summary else '无'}"
+            )
+            await save_conversation(user_id, user_msg, assistant_msg)
+            logger.info("[Memory] plan memory saved for user=%s, status=%s", user_id, status_str)
+        except Exception as exc:
+            logger.debug("[Memory] plan memory save failed (non-critical): %s", exc)
+
+    try:
+        asyncio.create_task(_save())
+    except Exception:
+        pass
 
 
 def _save_step_memory_background(
@@ -334,12 +539,71 @@ def _save_step_memory_background(
     result_quality: str,
     error_pattern: str,
     improvement_hint: str,
+    model_name: str = "qwen",
 ) -> None:
-    return
+    """Fire-and-forget: LLM judge then save successful step execution insight to KV memory.
+
+    Per write.md: only saves when LLM judges the experience is reusable across
+    different tasks with similar steps. Skips silently if quality is low.
+    """
+    if not _mem0_enabled() or not user_id or result_quality != "high":
+        return
+
+    async def _save() -> None:
+        try:
+            from core.llm.memory import save_conversation
+            constraint_desc = local_constraint.get("constraint", "") if local_constraint else ""
+            risk_desc = f"{error_pattern}，解决：{improvement_hint}" if error_pattern else "无"
+
+            # LLM judge: is this experience reusable?
+            judge_prompt = _STEP_MEMORY_JUDGE_PROMPT.format(
+                step_description=step_description,
+                result_summary=f"约束：{constraint_desc or '无'}",
+                risk=risk_desc,
+            )
+            judge_text = await _call_llm_agent(judge_prompt, model_name, user_id, timeout=20)
+            judge_data = _parse_json_output(judge_text)
+            if not judge_data or not judge_data.get("reusable"):
+                logger.debug("[Memory] step memory skipped by LLM judge: %s", step_description[:40])
+                return
+
+            insight = judge_data.get("insight", "")
+            user_msg = f"执行子任务：{step_description}"
+            assistant_msg = f"执行洞见：{insight}" if insight else f"成功完成。{constraint_desc or ''}"
+            await save_conversation(user_id, user_msg, assistant_msg)
+            logger.info("[Memory] step memory saved for user=%s, step=%s", user_id, step_description[:40])
+        except Exception as exc:
+            logger.debug("[Memory] step memory save failed (non-critical): %s", exc)
+
+    try:
+        asyncio.create_task(_save())
+    except Exception:
+        pass
 
 
 def _save_user_profile_background(user_id: str, profile_update: Dict) -> None:
-    return
+    """Fire-and-forget: merge and save user profile features to KV memory."""
+    if not _mem0_enabled() or not user_id:
+        return
+
+    urgent = profile_update.get("urgent")
+    if not urgent:
+        return
+
+    async def _save() -> None:
+        try:
+            from core.llm.memory import save_conversation
+            user_msg = "用户特征更新"
+            assistant_msg = f"用户即时需求特征：{urgent}"
+            await save_conversation(user_id, user_msg, assistant_msg)
+            logger.info("[Memory] user profile saved for user=%s", user_id)
+        except Exception as exc:
+            logger.debug("[Memory] user profile save failed (non-critical): %s", exc)
+
+    try:
+        asyncio.create_task(_save())
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -397,21 +661,19 @@ _USER_PROFILE_PROMPT_TEMPLATE = """你是 User-Profile Agent，负责从用户�
 ## 用户输入（最近3轮历史+最新query）
 {user_input}
 
-## 从记忆中检索到的用户特征（当前记忆未启用，此处为空）
+## 从记忆中检索到的与当前任务相关的用户特征（top-4）
 {memory_context}
 
 ## 你的任务
-1. 从用户输入中提取"urgent"：用户在这次输入中的第一时间需求（简短描述）
-2. 整合记忆中检索到的与当前任务相关的用户特征到"mem"字段
+1. 从用户输入中提取"urgent"：用户在这次输入中最核心的即时需求（一句话，聚焦偏好/认知水平/风格倾向等高稳定性特征）
+2. 将记忆中检索到的相关用户特征整合到"mem"字段（如果记忆为空则为 null）
 
 ## 输出要求
-请严格输出以下 JSON：
+请严格输出以下 JSON（不要输出其他内容）：
 {{
-  "urgent": "用户的即时需求描述（一句话）",
-  "mem": null
-}}
-
-只输出 JSON，不要解释。"""
+  "urgent": "用户的即时需求描述（一句话，不超过50字）",
+  "mem": "从记忆中提炼的与本次任务相关的用户特征摘要（或 null）"
+}}"""
 
 
 async def _run_user_profile_agent(
@@ -420,10 +682,25 @@ async def _run_user_profile_agent(
     model_name: str,
     board: Dict[str, Any],
 ) -> None:
-    """Extract user characteristics, write to context board's 'user' field."""
+    """Extract user characteristics, write to context board's 'user' field.
+
+    Retrieves top-4 user profile memories (read.md: User-profile module, top k=4),
+    then writes merged urgent+mem to board. Async background write to memory after.
+    """
+    # Retrieve relevant user profile memories (top k=4 per spec)
+    memory_context = "（记忆系统未启用或暂无相关记录）"
+    if _mem0_enabled() and user_id:
+        try:
+            from core.llm.memory import retrieve_memories
+            raw = await retrieve_memories(user_id, user_input, limit=4, min_score=0.4)
+            if raw:
+                memory_context = raw
+        except Exception as exc:
+            logger.debug("[UserProfileAgent] memory retrieval failed: %s", exc)
+
     prompt = _USER_PROFILE_PROMPT_TEMPLATE.format(
         user_input=user_input,
-        memory_context="（记忆系统未启用）",
+        memory_context=memory_context,
     )
     try:
         text = await _call_llm_agent(prompt, model_name, user_id, timeout=30)
@@ -431,6 +708,7 @@ async def _run_user_profile_agent(
         if data:
             board["user"]["urgent"] = data.get("urgent")
             board["user"]["mem"] = data.get("mem")
+            # Async background: save extracted profile to memory
             _save_user_profile_background(user_id, data)
     except Exception as exc:
         logger.debug("[UserProfileAgent] failed (non-critical): %s", exc)
@@ -529,6 +807,7 @@ async def _run_planner(
                     "step_id": s.get("step_id", f"step_{i+1}"),
                     "description": s.get("description", s.get("title", "")),
                     "output": None,
+                    "risk": None,
                 }
                 for i, s in enumerate(data.get("steps", []))
             ]
@@ -924,6 +1203,15 @@ async def _run_subagent_step(
                 isolated=True,
                 max_iters=_step_max_iters,
             )
+
+        # Inject plan-mode context (goal, completed step outputs, constraints)
+        # into sys_prompt at system level so the agent has stable background
+        # awareness. For pool agents, reset() already restored the base prompt
+        # before this point, so _base_system_prompt is never polluted.
+        _plan_ctx_section = _build_plan_context_prompt_section(
+            board, step, len(board.get("plan", {}).get("steps", []))
+        )
+        agent.sys_prompt = agent.sys_prompt + "\n\n" + _plan_ctx_section
 
         _orig_hook = agent._instance_pre_reply_hooks.get("dynamic_model")
         if _orig_hook:
@@ -1327,6 +1615,7 @@ async def astream_execute_plan(
             "step_id": s.step_id,
             "description": s.description or s.title,
             "output": None,
+            "risk": None,
         }
         for s in plan.steps
     ]
@@ -1474,6 +1763,11 @@ async def astream_execute_plan(
                     redo_count += 1
                     redo_failure_reason = qa_data.get("failure_reason", [])
                     logger.warning("[QA] REDO_STEP step=%d redo=%d", step.step_order, redo_count)
+                    # Write failure reason to context board step risk field
+                    for board_step in board["plan"]["steps"]:
+                        if board_step["step_id"] == step.step_id:
+                            board_step["risk"] = redo_failure_reason
+                            break
                     if redo_count >= _MAX_REDO_PER_STEP:
                         # Escalate to local REPLAN
                         qa_verdict = "REPLAN"
@@ -1554,7 +1848,7 @@ async def astream_execute_plan(
                                 step_idx = 0
                                 # Reset board steps
                                 board["plan"]["steps"] = [
-                                    {"step_id": s.step_id, "description": s.description or s.title, "output": None}
+                                    {"step_id": s.step_id, "description": s.description or s.title, "output": None, "risk": None}
                                     for s in steps
                                 ]
                                 svc.update_step(steps[step_idx].step_id, status="running", started_at=datetime.utcnow())
@@ -1610,10 +1904,15 @@ async def astream_execute_plan(
                         if updated_plan:
                             db.refresh(updated_plan)
                             steps = list(updated_plan.steps)
-                            # Reset board steps for remaining
+                            # Reset board steps for remaining, preserve output of completed steps
+                            old_steps = board["plan"]["steps"]
                             board["plan"]["steps"] = [
-                                {"step_id": s.step_id, "description": s.description or s.title,
-                                 "output": board["plan"]["steps"][i]["output"] if i < len(board["plan"]["steps"]) else None}
+                                {
+                                    "step_id": s.step_id,
+                                    "description": s.description or s.title,
+                                    "output": old_steps[i]["output"] if i < len(old_steps) else None,
+                                    "risk": old_steps[i]["risk"] if i < len(old_steps) else None,
+                                }
                                 for i, s in enumerate(steps)
                             ]
                             svc.update_step(steps[step_idx].step_id, status="running", started_at=datetime.utcnow())
@@ -1674,6 +1973,7 @@ async def astream_execute_plan(
                 result_quality="high" if _final_step_status == "success" and qa_verdict == "PASS" else "low",
                 error_pattern=str(qa_data.get("failure_reason", [{}])[0].get("type", "")) if qa_verdict != "PASS" else "",
                 improvement_hint=str(qa_data.get("failure_reason", [{}])[0].get("description", "")) if qa_verdict != "PASS" else "",
+                model_name=model_name,
             )
 
             yield {
@@ -1723,13 +2023,14 @@ async def astream_execute_plan(
             result_summary=result_text[:2000] if result_text else overall_summary,
         )
 
+        _final_failure_reason = qa_final.get("assessment", "") if not task_success else ""
         _save_task_memory_background(
             user_id=user_id,
             user_goal=board["plan"].get("user_goal", ""),
             plan_steps=[s.title for s in steps],
             success=bool(task_success) if task_success is not None else False,
             quality_score=quality_score,
-            failure_reason="",
+            failure_reason=_final_failure_reason,
             final_solution_summary=result_text[:500],
             forced=forced_mode,
             key_constraints=[

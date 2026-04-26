@@ -15,7 +15,7 @@ input:
   "expected_schema": {...}
 }
 
-output:
+output（非全局检查）:
 {
   "verdict": "PASS | REDO_STEP | REPLAN ",
 
@@ -42,10 +42,20 @@ output:
       "confidence": 0.0
     }
   ]
-
 }
+output（全局检查）
+{
+  "verdict": "PASS | FAIL",
+  "failure_reason": [
+    "failure_type": "execution_error | goal_misalignment ",
 
+    "failure_description": "...",
 
+    "evidence": "...",
+
+    "confidence": 0.0
+  ]
+}
 
 //你的判断依据已经被其他agent定义，一般分下面两种：
 
@@ -91,11 +101,13 @@ constraints": {
 
 //当QA面对失败情况时：
 当你判定REDO_STEP时，先让对应subagent REDO_STEP，次数达到2次以上，触发planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
+
 当你判定REPLAN时，planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
 系统重置后，你仍然需要对每一步进行检查，但当下次再次面临REPLAN次数超过2次时，不再进行系统重置，而是进入fored模式，计划继续执行但你不需要再进行任何check。（整个系统重置次数最高为1次）
-当planner或subagent重做时，你需要给他们你判定失败的原因
+
+当planner或subagent重做时，你需要给他们你判定失败的原因，当裁定subagent重做后，把失败原因填充到context的plan-step-risk字段
 
 
 
-当你最后plan执行完，但判定全局失败时，你不需要让planner或subagent重做，默认输出即可
+当你最后plan执行完，但判定全局失败时，你不需要让planner或subagent重做，默认输出即可（这里的“失败“判定会与memory存储失败经验相关）
 
