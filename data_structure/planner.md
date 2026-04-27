@@ -38,8 +38,9 @@ output:
   "steps": [
     {
       "step_id": 1,
-
-      // ⚠️ 只描述任务，不包含约束、格式、实现方式
+      //步骤任务简述
+      "brief_description":
+      //只描述步骤任务，不包含约束、格式、实现方式
       "description": "..."
     }
   ]

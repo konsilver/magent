@@ -132,3 +132,7 @@ img/
 
 # codex
 .codex
+
+.for_claude.md
+
+.error_log/

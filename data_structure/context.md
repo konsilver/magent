@@ -12,6 +12,8 @@
     "steps": [
         {
             "step_id": 1,
+            //步骤简述
+            "brief_description":
             //任务描述
             "description": "...",
             //对应subagent的输出结果写在这里,注意要经过QA check成功后再写
