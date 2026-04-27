@@ -59,6 +59,7 @@ docker/
 output/
 images/
 logs/
+error_log/
 result/
 .claude/
 

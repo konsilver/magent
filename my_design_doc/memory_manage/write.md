@@ -35,14 +35,14 @@ b. KV模式存储：
         }
 c. Graph模式存储：
         PlanSkeleton（有plan_id+抽象描述） --has--> StepNode（包含节点抽象描述）
-        StepNode --depends_on--> StepNode
-        PlanSkeleton --fails_due_to--> Suggestion
+        StepNode --next--> StepNode
+        PlanSkeleton --refer--> Suggestion
     成功样本：
         Task A
             ↓ uses
         Skeleton S1
             ↓ has
-        [N1 → N2 → N3]
+        [N1 next N2 next N3]
     失败样本：
         Skeleton S1
             ↓ refer（注意这里是计划骨架参考的优化建议而非step的建议，仅有replan的计划会有这一部分）

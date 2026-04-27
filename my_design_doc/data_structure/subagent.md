@@ -69,6 +69,8 @@ output:
       "validation_rules": [...]
     }
   }
+
+  "tool_use_trace": ...
 }
 
 - 必须遵守：

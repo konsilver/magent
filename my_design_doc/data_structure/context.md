@@ -22,6 +22,8 @@
             "output": "...",
             //QA检查当前step需要REDO后，把优化建议记在这里，以后存入记忆，如果这一步重做多次则拼接填入
             "suggestion": "..."
+            //subagent做完自己的任务后总结工具调用轨迹，用于存入memory
+            "tool_use_trace": ...
         }
     ]
 

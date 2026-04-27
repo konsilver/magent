@@ -116,12 +116,38 @@ class DatabaseSettings:
 
 
 @dataclass(frozen=True)
+class RoleModelSettings:
+    """Per-role LLM model name overrides.
+
+    Each field corresponds to one agent role.  When the env var is absent the
+    role falls back to ``BASE_MODEL_NAME``.  Set ``ROLE_<ROLE>_MODEL`` in your
+    ``.env`` file to override a specific role without touching the others.
+
+    Role env vars:
+        ROLE_USER_PROFILE_MODEL  — UserProfile agent
+        ROLE_PLAN_MODEL          — Planner agent
+        ROLE_WARMUP_MODEL        — Warmup agent
+        ROLE_SUBAGENT_MODEL      — SubAgent (step executor)
+        ROLE_QA_MODEL            — QA agent (per-step + final)
+        ROLE_INTENT_MODEL        — Intent classifier (confirm/replan)
+    """
+
+    user_profile: str = field(default_factory=lambda: _env("ROLE_USER_PROFILE_MODEL", _env("BASE_MODEL_NAME", "")))
+    plan: str = field(default_factory=lambda: _env("ROLE_PLAN_MODEL", _env("BASE_MODEL_NAME", "")))
+    warmup: str = field(default_factory=lambda: _env("ROLE_WARMUP_MODEL", _env("BASE_MODEL_NAME", "")))
+    subagent: str = field(default_factory=lambda: _env("ROLE_SUBAGENT_MODEL", _env("BASE_MODEL_NAME", "")))
+    qa: str = field(default_factory=lambda: _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", "")))
+    intent: str = field(default_factory=lambda: _env("ROLE_INTENT_MODEL", _env("BASE_MODEL_NAME", "")))
+
+
+@dataclass(frozen=True)
 class LLMSettings:
     model_url: str = field(default_factory=lambda: _env("MODEL_URL", ""))
     api_key: str = field(default_factory=lambda: _env("API_KEY", ""))
     base_model_name: str = field(default_factory=lambda: _env("BASE_MODEL_NAME", ""))
     enable_summary: bool = field(default_factory=lambda: _bool(_env("ENABLE_SUMMARY", "true")))
     summary_max_rounds: int = field(default_factory=lambda: _int(_env("SUMMARY_MAX_ROUNDS", "3"), 3))
+    roles: RoleModelSettings = field(default_factory=RoleModelSettings)
 
 
 @dataclass(frozen=True)

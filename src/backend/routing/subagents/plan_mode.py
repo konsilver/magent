@@ -29,6 +29,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from core.config.settings import settings
 from core.infra import log_writer
 from core.infra.logging import LogContext
 from core.llm.agent_factory import create_agent_executor
@@ -47,6 +48,17 @@ _PROMPT_PATH = os.path.join(
 # ── Control-flow constants ────────────────────────────────────────────────────
 _MAX_REDO_PER_STEP = 2      # REDO_STEP retries before escalating to REPLAN
 _MAX_LOCAL_REPLAN = 1       # local REPLAN count before triggering full global reset
+
+
+def _role_model(role: str, fallback: str) -> str:
+    """Return role-specific model name, falling back to the request-level model.
+
+    Reads from ``settings.llm.roles.<role>``.  If that value is empty (e.g.
+    no env var was set), ``fallback`` (the model_name from the current request)
+    is returned so existing behaviour is preserved.
+    """
+    role_val = getattr(settings.llm.roles, role, "")
+    return role_val if role_val else fallback
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -205,7 +217,7 @@ def _make_context_board() -> Dict[str, Any]:
         },
         "plan": {
             "user_goal": None,
-            "steps": [],      # list of {step_id, brief_description, description, output, suggestion}
+            "steps": [],      # list of {step_id, brief_description, description, output, suggestion, tool_use_trace}
             "plan_suggestion": None,
         },
         "check": {
@@ -579,21 +591,26 @@ _PLAN_MEMORY_DISTILL_PROMPT = """你是记忆管理助手，负责从一次计�
 ## 任务目标
 {user_goal}
 
-## 计划步骤（按序）
+## 计划步骤（含原始描述，按序）
 {steps_desc}
 
 ## 执行结果
 状态: {status}
 质量评分: {quality_score}
-失败类型: {failure_type}
 
 ## 你的任务
-用一句话（不超过100字）总结这个计划的"分解策略"，聚焦于任务是如何被拆解的，不涉及执行细节。
-然后输出以下 JSON（不要输出其他内容）：
+1. 用一句话（不超过100字）总结这个计划的"分解策略"，聚焦于任务是如何被拆解的，不涉及执行细节
+2. 将每个步骤抽象化（去除实现细节、工具名称、具体数值），保留步骤的功能语义
+3. 输出步骤之间的依赖顺序（线性执行则依次写 next 关系）
+
+输出以下 JSON（不要输出其他内容）：
 {{
   "skeleton_description": "一句话描述分解策略",
   "task_type": "研究分析|代码开发|数据处理|问题解答|其他",
-  "failure_type": "missing_step|wrong_order|over_decomposed|goal_mismatch|none"
+  "abstract_steps": [
+    {{"step_id": "step_1", "abstract_title": "抽象步骤名称（不含实现细节）"}},
+    ...
+  ]
 }}"""
 
 _STEP_MEMORY_JUDGE_PROMPT = """你是记忆管理助手，判断某次子任务执行经验是否值得存入记忆供未来参考。
@@ -645,12 +662,14 @@ def _save_task_memory_background(
     plan_id: Optional[str] = None,
     step_details: Optional[List[Dict[str, Any]]] = None,
     plan_suggestion: str = "",
+    model_name: str = "",
 ) -> None:
-    """Fire-and-forget: distill and save plan skeleton to KV + Graph memory after execution.
+    """Fire-and-forget: LLM distill → KV + Graph memory after plan execution.
 
-    KV: encodes plan experience as a conversation pair — mem0 extracts facts automatically.
-    Graph (when MEM0_GRAPH_ENABLED): stores PlanSkeleton→StepNode→Suggestion relations.
-    Graph stores optimization suggestions (not raw failure reasons) per design doc.
+    Step 1: LLM extracts skeleton_description, task_type, abstract_steps from context.
+    Step 2: Write KV with distilled info (plan_id links KV to Graph).
+    Step 3 (Graph only): Write PlanSkeleton --has--> StepNode --next--> StepNode chain;
+            on replan also write PlanSkeleton --refers_to--> Suggestion.
     """
     if not _mem0_enabled() or not user_id:
         return
@@ -659,52 +678,104 @@ def _save_task_memory_background(
         try:
             from core.llm.memory import save_conversation, MEM0_GRAPH_ENABLED
             status_str = "success" if success else "replan"
-            steps_desc = "\n".join(f"{i+1}. {s}" for i, s in enumerate(plan_steps))
-
-            # ── KV storage: encode as conversation pair ──────────────────────
-            user_msg = f"执行了一个计划任务：{user_goal}\n步骤：{steps_desc}"
-            _suggestion_part = f"优化建议：{plan_suggestion}" if plan_suggestion else (
-                f"风险提示：{failure_reason[:150]}" if failure_reason else ""
+            steps_desc = "\n".join(
+                f"{i+1}. {s.get('title', s) if isinstance(s, dict) else s}"
+                for i, s in enumerate(plan_steps)
             )
-            assistant_msg = (
+
+            # ── Step 1: LLM distillation ─────────────────────────────────────
+            distill_prompt = _PLAN_MEMORY_DISTILL_PROMPT.format(
+                user_goal=user_goal,
+                steps_desc=steps_desc,
+                status=status_str,
+                quality_score=f"{quality_score:.2f}",
+            )
+            _model = model_name or settings.llm.roles.plan or settings.llm.base_model_name
+            distill_text = await _call_llm_agent(distill_prompt, _model, user_id, timeout=30)
+            distill_data = _parse_json_output(distill_text) or {}
+
+            skeleton_desc = distill_data.get("skeleton_description", user_goal[:100])
+            task_type = distill_data.get("task_type", "其他")
+            abstract_steps: List[Dict] = distill_data.get("abstract_steps", [])
+
+            # Fall back to raw titles if LLM didn't return abstract steps
+            if not abstract_steps:
+                raw_nodes = step_details or [{"title": s, "step_id": f"s{i+1}"} for i, s in enumerate(plan_steps)]
+                abstract_steps = [
+                    {"step_id": n.get("step_id", f"step_{i+1}"), "abstract_title": n.get("title", f"步骤{i+1}")}
+                    for i, n in enumerate(raw_nodes)
+                ]
+
+            pid = (plan_id or "")[:16]
+
+            # ── Step 2: KV storage ───────────────────────────────────────────
+            # Encode distilled skeleton as conversation pair.
+            # plan_id is embedded so Graph lookup can match KV entries.
+            _suggestion_part = f"优化建议：{plan_suggestion[:150]}" if plan_suggestion else (
+                f"失败摘要：{failure_reason[:150]}" if failure_reason else ""
+            )
+            kv_user_msg = (
+                f"计划任务（plan_id={pid}）：{user_goal}\n"
+                f"分解策略：{skeleton_desc}\n"
+                f"任务类型：{task_type}"
+            )
+            kv_assistant_msg = (
                 f"计划执行{status_str}，质量评分 {quality_score:.2f}。"
-                f"{_suggestion_part}"
-                f"关键约束：{'; '.join(key_constraints[:3]) if key_constraints else '无'}。"
-                f"结果摘要：{final_solution_summary[:200] if final_solution_summary else '无'}"
+                + (f"{_suggestion_part}。" if _suggestion_part else "")
+                + f"关键约束：{'; '.join(key_constraints[:3]) if key_constraints else '无'}。"
+                + f"结果摘要：{final_solution_summary[:200] if final_solution_summary else '无'}"
             )
-            await save_conversation(user_id, user_msg, assistant_msg)
-            logger.info("[Memory] plan KV memory saved for user=%s, status=%s", user_id, status_str)
+            await save_conversation(user_id, kv_user_msg, kv_assistant_msg)
+            logger.info("[Memory] plan KV memory saved for user=%s, plan_id=%s, status=%s",
+                        user_id, pid, status_str)
 
-            # ── Graph storage (only when Neo4j is enabled) ───────────────────
-            # PlanSkeleton -has-> StepNode; PlanSkeleton -refer-> Suggestion (replan only)
-            if MEM0_GRAPH_ENABLED and plan_id:
-                pid = plan_id[:16]
-                step_nodes = step_details or [{"title": s, "step_id": f"s{i+1}"} for i, s in enumerate(plan_steps)]
+            # ── Step 3: Graph storage ────────────────────────────────────────
+            # Relation schema:
+            #   PlanSkeleton(pid) --has--> StepNode(sid)      (steps belong to skeleton)
+            #   StepNode(sid_n)   --next--> StepNode(sid_n+1) (execution order)
+            #   PlanSkeleton(pid) --refers_to--> Suggestion   (replan only)
+            #
+            # We encode this as natural-language conversation pairs so that
+            # mem0's graph LLM can extract the entities and relations.
+            if MEM0_GRAPH_ENABLED and pid:
+                # Build step-node lines
+                step_lines = []
+                for i, s in enumerate(abstract_steps):
+                    sid = str(s.get("step_id", f"step_{i+1}"))[:12]
+                    title = s.get("abstract_title", f"步骤{i+1}")
+                    step_lines.append(f"节点 {sid}：{title}")
 
-                node_lines = []
-                for i, s in enumerate(step_nodes):
-                    title = s.get("title") or (plan_steps[i] if i < len(plan_steps) else f"步骤{i+1}")
-                    sid = s.get("step_id", f"step_{i+1}")[:12]
-                    dep = f" 依赖于 {step_nodes[i-1].get('step_id', f'step_{i}')[:12]}" if i > 0 else ""
-                    node_lines.append(f"节点 {sid}（{title}）{dep}")
-
-                # Graph stores suggestion (not failure reason) per write.md spec
-                suggestion_line = ""
-                if not success and plan_suggestion:
-                    suggestion_line = f"\n计划骨架 {pid} 参考优化建议：{plan_suggestion[:150]}"
-                elif not success and failure_reason:
-                    suggestion_line = f"\n计划骨架 {pid} 参考优化建议：{failure_reason[:150]}"
+                # Dependency chain (next relations)
+                dep_lines = []
+                for i in range(len(abstract_steps) - 1):
+                    s1 = str(abstract_steps[i].get("step_id", f"step_{i+1}"))[:12]
+                    s2 = str(abstract_steps[i + 1].get("step_id", f"step_{i+2}"))[:12]
+                    dep_lines.append(f"节点 {s1} 执行后紧接节点 {s2}")
 
                 graph_user_msg = (
-                    f"计划骨架 {pid} 包含以下步骤节点：\n"
-                    + "\n".join(node_lines)
-                    + suggestion_line
+                    f"计划骨架 {pid} 属于任务类型[{task_type}]，分解策略：{skeleton_desc}。\n"
+                    f"包含以下抽象步骤节点：\n" + "\n".join(step_lines)
+                    + ("\n步骤执行顺序：\n" + "\n".join(dep_lines) if dep_lines else "")
                 )
                 graph_assistant_msg = (
-                    f"计划骨架 {pid} 的任务类型：{user_goal[:60]}，执行状态：{status_str}。"
+                    f"计划骨架 {pid} 执行状态：{status_str}，"
+                    f"共 {len(abstract_steps)} 个步骤节点。"
                 )
                 await save_conversation(user_id, graph_user_msg, graph_assistant_msg)
-                logger.info("[Memory] plan Graph memory saved for plan_id=%s", plan_id)
+
+                # Write Suggestion relation only for replan
+                if not success:
+                    suggestion_text = plan_suggestion or failure_reason or ""
+                    if suggestion_text:
+                        sugg_user_msg = (
+                            f"计划骨架 {pid} 参考优化建议：{suggestion_text[:200]}"
+                        )
+                        sugg_assistant_msg = (
+                            f"计划骨架 {pid} 在重新规划时应参考上述建议。"
+                        )
+                        await save_conversation(user_id, sugg_user_msg, sugg_assistant_msg)
+
+                logger.info("[Memory] plan Graph memory saved for plan_id=%s", pid)
 
         except Exception as exc:
             logger.debug("[Memory] plan memory save failed (non-critical): %s", exc)
@@ -718,35 +789,37 @@ def _save_task_memory_background(
 def _save_step_memory_background(
     user_id: str,
     step_description: str,
-    input_context: str,
+    tool_use_trace: List[str],
     local_constraint: Dict,
-    output_schema: Dict,
-    result_quality: str,
-    error_pattern: str,
-    improvement_hint: str,
-    model_name: str = "qwen",
+    had_redo: bool,
+    qa_suggestion: str,
+    model_name: str = "",
 ) -> None:
     """Fire-and-forget: LLM judge then save successful step execution insight to KV memory.
 
-    Per write.md: only saves when LLM judges the experience is reusable across
-    different tasks with similar steps. Skips silently if quality is low.
+    Called after the entire plan completes (not per-step), so the full board context
+    is available.  Only writes when the LLM judges the experience is reusable.
     """
-    if not _mem0_enabled() or not user_id or result_quality != "high":
+    if not _mem0_enabled() or not user_id:
         return
 
     async def _save() -> None:
         try:
             from core.llm.memory import save_conversation
             constraint_desc = local_constraint.get("constraint", "") if local_constraint else ""
-            risk_desc = f"{error_pattern}，解决：{improvement_hint}" if error_pattern else "无"
+            tools_desc = ", ".join(t for t in tool_use_trace if t) or "无"
+            redo_desc = f"曾经 REDO，优化建议：{qa_suggestion}" if had_redo and qa_suggestion else (
+                "曾经 REDO" if had_redo else "无"
+            )
 
-            # LLM judge: is this experience reusable?
+            # LLM judge: is this experience reusable across different tasks with similar steps?
             judge_prompt = _STEP_MEMORY_JUDGE_PROMPT.format(
                 step_description=step_description,
-                result_summary=f"约束：{constraint_desc or '无'}",
-                risk=risk_desc,
+                result_summary=f"约束：{constraint_desc or '无'}；调用工具：{tools_desc}",
+                risk=redo_desc,
             )
-            judge_text = await _call_llm_agent(judge_prompt, model_name, user_id, timeout=20)
+            _model = model_name or settings.llm.base_model_name
+            judge_text = await _call_llm_agent(judge_prompt, _model, user_id, timeout=20)
             judge_data = _parse_json_output(judge_text)
             if not judge_data or not judge_data.get("reusable"):
                 logger.debug("[Memory] step memory skipped by LLM judge: %s", step_description[:40])
@@ -754,7 +827,7 @@ def _save_step_memory_background(
 
             insight = judge_data.get("insight", "")
             user_msg = f"执行子任务：{step_description}"
-            assistant_msg = f"执行洞见：{insight}" if insight else f"成功完成。{constraint_desc or ''}"
+            assistant_msg = f"执行洞见：{insight}" if insight else f"成功完成。工具：{tools_desc}"
             await save_conversation(user_id, user_msg, assistant_msg)
             logger.info("[Memory] step memory saved for user=%s, step=%s", user_id, step_description[:40])
         except Exception as exc:
@@ -766,8 +839,8 @@ def _save_step_memory_background(
         pass
 
 
-def _save_user_profile_background(user_id: str, profile_update: Dict) -> None:
-    """Fire-and-forget: merge and save user profile features to KV memory."""
+def _save_user_profile_background(user_id: str, profile_update: Dict, model_name: str = "") -> None:
+    """Fire-and-forget: merge urgent + mem via LLM, delete old entries, write merged result."""
     if not _mem0_enabled() or not user_id:
         return
 
@@ -775,13 +848,45 @@ def _save_user_profile_background(user_id: str, profile_update: Dict) -> None:
     if not urgent:
         return
 
+    mem = profile_update.get("mem") or ""
+
     async def _save() -> None:
         try:
-            from core.llm.memory import save_conversation
+            from core.llm.memory import save_conversation, get_all_memories, delete_memory
+
+            # Step 1: LLM merge urgent + mem into a single facts list
+            merge_prompt = _USER_PROFILE_MERGE_PROMPT.format(
+                mem=mem or "（暂无历史特征）",
+                urgent=urgent,
+            )
+            _model = model_name or settings.llm.roles.user_profile or settings.llm.base_model_name
+            merged_text = await _call_llm_agent(merge_prompt, _model, user_id, timeout=20)
+            merged_data = _parse_json_output(merged_text)
+            facts: List[str] = merged_data.get("facts", []) if merged_data else []
+            if not facts:
+                facts = [urgent]
+
+            # Step 2: Delete old user-profile KV entries so we don't accumulate stale data.
+            # We only delete entries whose content looks like a user-profile fact (heuristic:
+            # entries added by this function contain "用户特征" or "用户即时需求" or
+            # are short single-fact strings).  We do a full get_all and filter.
+            try:
+                all_entries = await get_all_memories(user_id)
+                for entry in all_entries:
+                    text = (entry.get("memory") or "").strip()
+                    if "用户特征" in text or "用户即时需求" in text:
+                        mid = entry.get("id") or entry.get("memory_id")
+                        if mid:
+                            await delete_memory(mid)
+            except Exception as del_exc:
+                logger.debug("[Memory] user profile delete old failed (non-critical): %s", del_exc)
+
+            # Step 3: Write merged facts as a conversation pair
+            facts_text = "\n".join(f"- {f}" for f in facts)
             user_msg = "用户特征更新"
-            assistant_msg = f"用户即时需求特征：{urgent}"
+            assistant_msg = f"用户特征（合并后）：\n{facts_text}"
             await save_conversation(user_id, user_msg, assistant_msg)
-            logger.info("[Memory] user profile saved for user=%s", user_id)
+            logger.info("[Memory] user profile merged & saved for user=%s, facts=%d", user_id, len(facts))
         except Exception as exc:
             logger.debug("[Memory] user profile save failed (non-critical): %s", exc)
 
@@ -893,8 +998,8 @@ async def _run_user_profile_agent(
         if data:
             board["user"]["urgent"] = data.get("urgent")
             board["user"]["mem"] = data.get("mem")
-            # Async background: save extracted profile to memory
-            _save_user_profile_background(user_id, data)
+            # Async background: merge urgent+mem via LLM then save to memory
+            _save_user_profile_background(user_id, data, model_name=model_name)
     except Exception as exc:
         logger.debug("[UserProfileAgent] failed (non-critical): %s", exc)
 
@@ -1025,6 +1130,7 @@ async def _run_planner(
                     "description": s.get("description", s.get("title", "")),
                     "output": None,
                     "suggestion": None,
+                    "tool_use_trace": [],
                 }
                 for i, s in enumerate(data.get("steps", []))
             ]
@@ -1663,7 +1769,7 @@ async def astream_generate_plan(
     """
     # ── Intent classification (when responding to a shown plan) ──────────────
     if user_reply and previous_plan_id:
-        intent = await _classify_user_intent(user_reply, model_name, user_id)
+        intent = await _classify_user_intent(user_reply, _role_model("intent", model_name), user_id)
         yield {"type": "plan_intent", "intent": intent, "plan_id": previous_plan_id}
 
         if intent == "confirm":
@@ -1703,7 +1809,7 @@ async def astream_generate_plan(
     # Run UserProfile Agent and memory retrieval in parallel
     retrieved_memory, _ = await asyncio.gather(
         _retrieve_plan_memory(user_id, task_description),
-        _run_user_profile_agent(user_id, task_description, model_name, board),
+        _run_user_profile_agent(user_id, task_description, _role_model("user_profile", model_name), board),
     )
 
     yield {"type": "plan_generating", "delta": "正在制定执行计划...\n"}
@@ -1712,7 +1818,7 @@ async def astream_generate_plan(
         plan_data = await _run_planner(
             user_input=task_description,
             user_id=user_id,
-            model_name=model_name,
+            model_name=_role_model("plan", model_name),
             tools_desc=tools_desc,
             retrieved_memory=retrieved_memory,
             board=board,
@@ -1891,6 +1997,7 @@ async def astream_execute_plan(
             "description": s.get("description") or s.get("title", ""),
             "output": None,
             "suggestion": None,
+            "tool_use_trace": [],
         }
         for s in plan_dict["steps"]
     ]
@@ -1905,7 +2012,7 @@ async def astream_execute_plan(
     warmup_result = await _run_warmup(
         user_input=plan_dict["task_input"],
         user_id=user_id,
-        model_name=model_name,
+        model_name=_role_model("warmup", model_name),
         retrieved_memory=warmup_memory,
         board=board,
     )
@@ -1989,7 +2096,7 @@ async def astream_execute_plan(
                     retrieved_memory=step_memory,
                     prepared_history=prepared_history,
                     uploaded_files=uploaded_files,
-                    model_name=model_name,
+                    model_name=_role_model("subagent", model_name),
                     user_id=user_id,
                     enabled_kb_ids=enabled_kb_ids,
                     failure_reason=redo_failure_reason,
@@ -2013,7 +2120,7 @@ async def astream_execute_plan(
                     board=board,
                     local_constraint=current_local_constraint,
                     expected_schema=current_expected_schema,
-                    model_name=model_name,
+                    model_name=_role_model("qa", model_name),
                     user_id=user_id,
                 )
                 qa_verdict = qa_data.get("verdict", "PASS")
@@ -2099,7 +2206,7 @@ async def astream_execute_plan(
                     new_plan_data = await _run_planner(
                         user_input=plan_dict["task_input"],
                         user_id=user_id,
-                        model_name=model_name,
+                        model_name=_role_model("plan", model_name),
                         tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
                         retrieved_memory=replan_memory,
                         board=_make_context_board(),  # fresh board for new plan
@@ -2157,7 +2264,7 @@ async def astream_execute_plan(
                     new_plan_data = await _run_planner(
                         user_input=plan_dict["task_input"],
                         user_id=user_id,
-                        model_name=model_name,
+                        model_name=_role_model("plan", model_name),
                         tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
                         retrieved_memory=replan_memory,
                         board=board,
@@ -2204,6 +2311,7 @@ async def astream_execute_plan(
                                     "description": s.get("description") or s.get("title", ""),
                                     "output": old_board_steps[i]["output"] if i < len(old_board_steps) else None,
                                     "suggestion": old_board_steps[i].get("suggestion") if i < len(old_board_steps) else None,
+                                    "tool_use_trace": old_board_steps[i].get("tool_use_trace", []) if i < len(old_board_steps) else [],
                                 }
                                 for i, s in enumerate(updated["steps"])
                             ]
@@ -2234,11 +2342,26 @@ async def astream_execute_plan(
             narrative_text, subagent_json = _extract_next_step_instruction(step_text)
             display_text = narrative_text if narrative_text else step_text
 
-            # Write step output to context board (only after QA PASS or Forced)
+            # Write step output + tool_use_trace to context board (only after QA PASS)
             step_result_summary = subagent_json.get("result", "") if subagent_json else ""
             for board_step in board["plan"]["steps"]:
                 if board_step["step_id"] == step.step_id:
                     board_step["output"] = step_result_summary or _extract_summary(display_text)
+                    # Collect tool call names as trace for batch memory write after plan completes
+                    board_step["tool_use_trace"] = [
+                        tc.get("name") or tc.get("tool_name") or tc.get("function", {}).get("name", "")
+                        for tc in (step_tool_calls or [])
+                        if isinstance(tc, dict)
+                    ]
+                    # Record per-step QA result for batch memory write
+                    board_step["_qa_passed"] = (qa_verdict == "PASS")
+                    board_step["_had_redo"] = (redo_count > 0)
+                    board_step["_qa_suggestion"] = (
+                        str(qa_data.get("failure_reason", [{}])[0].get("suggestion", ""))
+                        if qa_verdict != "PASS" else ""
+                    )
+                    board_step["_step_description"] = step.description or step.title
+                    board_step["_local_constraint"] = current_local_constraint
                     break
 
             if display_text:
@@ -2275,18 +2398,6 @@ async def astream_execute_plan(
             if _final_step_status == "success":
                 completed_count += 1
 
-            _save_step_memory_background(
-                user_id=user_id,
-                step_description=step.description or step.title,
-                input_context="",
-                local_constraint=current_local_constraint,
-                output_schema=current_expected_schema,
-                result_quality="high" if _final_step_status == "success" and qa_verdict == "PASS" else "low",
-                error_pattern=str(qa_data.get("failure_reason", [{}])[0].get("description", "")) if qa_verdict != "PASS" else "",
-                improvement_hint=str(qa_data.get("failure_reason", [{}])[0].get("suggestion", "")) if qa_verdict != "PASS" else "",
-                model_name=model_name,
-            )
-
             yield {
                 "type": "plan_step_complete",
                 "step_id": step.step_id,
@@ -2318,7 +2429,7 @@ async def astream_execute_plan(
         qa_final = await _run_qa_final(
             board=board,
             final_output=result_text,
-            model_name=model_name,
+            model_name=_role_model("qa", model_name),
             user_id=user_id,
         )
         quality_score = qa_final.get("quality_score", 0.8)
@@ -2352,7 +2463,23 @@ async def astream_execute_plan(
             plan_id=plan_id,
             step_details=[{"step_id": s.step_id, "title": s.title} for s in steps],
             plan_suggestion=_final_plan_suggestion,
+            model_name=model_name,
         )
+
+        # Batch write step memories — runs after all steps complete so we can use
+        # the full board context.  Each step is isolated (no cross-step dependency).
+        for board_step in board["plan"]["steps"]:
+            if not board_step.get("_qa_passed"):
+                continue
+            _save_step_memory_background(
+                user_id=user_id,
+                step_description=board_step.get("_step_description") or board_step.get("description", ""),
+                tool_use_trace=board_step.get("tool_use_trace", []),
+                local_constraint=board_step.get("_local_constraint", {}),
+                had_redo=board_step.get("_had_redo", False),
+                qa_suggestion=board_step.get("_qa_suggestion", ""),
+                model_name=_role_model("qa", model_name),
+            )
 
         records = _cumulative_usage.usage_records
         total_prompt = sum(r.get("prompt_tokens", 0) for r in records)
