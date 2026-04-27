@@ -391,3 +391,75 @@
   font-weight:500;
   color:var(--color-success);
 }
+
+/* ── Brief description (collapsed subtitle under title) ── */
+.jx-plan-stepTitleGroup{
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+}
+.jx-plan-stepBrief{
+  font-size:11.5px;
+  color:var(--color-text-placeholder);
+  line-height:1.5;
+  margin-top:1px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+/* ── REDO failed state ── */
+.jx-plan-step--redo-failed{
+  background:rgba(255,77,79,.04) !important;
+}
+.jx-plan-redoHint{
+  margin:4px 0 0 32px;
+  font-size:12px;
+  color:var(--color-error);
+  font-weight:500;
+}
+
+/* ── REPLAN: replaced step (strikethrough) ── */
+.jx-plan-step--replaced{
+  opacity:.55;
+}
+.jx-plan-stepTitle--struck{
+  text-decoration:line-through;
+  text-decoration-color:var(--color-text-placeholder);
+  color:var(--color-text-tertiary) !important;
+}
+
+/* ── REPLAN: newly inserted step ── */
+.jx-plan-step--replan-new{
+  background:rgba(82,196,26,.05) !important;
+  border-left:3px solid rgba(82,196,26,.6);
+  border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+  margin-left:-3px;
+}
+
+/* ── REPLAN badge chips ── */
+.jx-plan-replanBadge{
+  display:inline-flex;
+  align-items:center;
+  font-size:10.5px;
+  font-weight:600;
+  padding:1px 7px;
+  border-radius:4px;
+  margin-bottom:4px;
+  line-height:1.6;
+}
+.jx-plan-replanBadge--replaced{
+  background:rgba(255,77,79,.1);
+  color:var(--color-error);
+}
+.jx-plan-replanBadge--new{
+  background:rgba(82,196,26,.12);
+  color:#389e0d;
+}
+.jx-plan-replanReason{
+  margin:0 0 6px !important;
+  font-size:11.5px;
+  color:var(--color-icon-orange);
+  font-style:italic;
+  line-height:1.55;
+}

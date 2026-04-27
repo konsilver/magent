@@ -217,6 +217,34 @@ async def _startup_ensure_tables():
 
 
 @app.on_event("startup")
+async def _startup_install_exception_handler():
+    """Install asyncio exception handler to suppress known MCP cleanup noise.
+
+    The mcp streamable_http client uses anyio.create_task_group() internally.
+    When cleanup runs in a different task (GeneratorExit propagation), anyio
+    raises RuntimeError('Attempted to exit cancel scope in a different task').
+    This is a library limitation — the error is non-fatal and only creates log
+    noise. We suppress it here rather than masking unrelated asyncio errors.
+    """
+    import asyncio
+
+    _original_handler = None
+
+    def _exception_handler(loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, RuntimeError) and "cancel scope" in str(exc):
+            return
+        if _original_handler is not None:
+            _original_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop = asyncio.get_event_loop()
+    _original_handler = loop.get_exception_handler()
+    loop.set_exception_handler(_exception_handler)
+
+
+@app.on_event("startup")
 async def _startup_preload():
     """Pre-load caches and initialize MCP connection pool at startup."""
     import asyncio

@@ -14,7 +14,7 @@ input:
   },
 
   "retrieved_memory": {
-    //在记忆中查找和我现在负责的子任务相似的任务的解决方案
+    //在记忆中查找和我现在负责的子任务相似的任务的解决方案经验
     "relevant_patterns": [...]
   },
 
@@ -22,16 +22,16 @@ input:
   "failure_reason": [
     //遍历每一条，把错误汇总到这里
     {
-      "type": "execution_error | goal_misalignment ",
+      // 是否满足局部约束（第一优先级）
+      "local_constraint_satisfied": true,
+
+      // 是否满足全局约束（方向性）
+      "global_constraint_satisfied": true,
 
       "description": "...",
-
-      // 哪个约束被违反
-      "violated": "...",
-
-      "evidence": "...",
-
       "confidence": 0.0
+      //填入context
+      "suggestion": "..."
     }
   ]
 }

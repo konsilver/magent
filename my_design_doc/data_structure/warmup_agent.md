@@ -11,11 +11,7 @@ input:
 
   //可以复用planner查找memory的结果，不用再查一遍
   "retrieved_memory": {
-    // 相似任务（用于参考 plan 的step制定）
     "similar_tasks": [...],
-
-    // 相关的历史失败记录（用于规避）
-    "failure_patterns": [...]
   },
 }
 

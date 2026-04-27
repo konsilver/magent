@@ -982,6 +982,8 @@ export async function generatePlanStream(
   historyMessages?: Array<{ role: string; content: string }>,
   attachments?: Array<{ name: string; content: string; mime_type: string; file_id: string; download_url: string }>,
   enabledAgentIds?: string[],
+  previousPlanId?: string,
+  userReply?: string,
 ): Promise<Response> {
   const url = `${getApiUrl()}/v1/plans/generate`;
   return authFetch(url, {
@@ -997,6 +999,8 @@ export async function generatePlanStream(
       ...(chatId ? { chat_id: chatId } : {}),
       ...(historyMessages && historyMessages.length > 0 ? { history_messages: historyMessages } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(previousPlanId ? { previous_plan_id: previousPlanId } : {}),
+      ...(userReply ? { user_reply: userReply } : {}),
     }),
     signal,
   });

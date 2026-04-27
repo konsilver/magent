@@ -11,8 +11,8 @@ Phase 2 (execute):  Warmup Agent reads context board (user + plan), sets
                     Control flow: PASS → next step,
                                   REDO_STEP (up to 2×) → retry current,
                                   REPLAN → Planner re-plans from failure point,
-                                  global_replan > 1 → full reset,
-                                  full_reset > 1 → Forced mode (QA disabled).
+                                  global_replan > 1 → SSE interrupted, new plan
+                                  sent to frontend for user confirmation.
 """
 
 from __future__ import annotations
@@ -22,17 +22,17 @@ import json
 import logging
 import os
 import re
+import threading
+import uuid
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from core.db.models import Plan
 from core.infra import log_writer
 from core.infra.logging import LogContext
 from core.llm.agent_factory import create_agent_executor
 from core.llm.mcp_manager import close_clients
-from core.services.plan_service import PlanService
 from routing.streaming import StreamingAgent, _UsageTrackingModel
 
 import time as _time
@@ -47,7 +47,149 @@ _PROMPT_PATH = os.path.join(
 # ── Control-flow constants ────────────────────────────────────────────────────
 _MAX_REDO_PER_STEP = 2      # REDO_STEP retries before escalating to REPLAN
 _MAX_LOCAL_REPLAN = 1       # local REPLAN count before triggering full global reset
-_MAX_GLOBAL_RESET = 1       # full global reset count before entering Forced mode
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# In-memory Plan Store  (replaces DB persistence for Plan/PlanStep)
+#
+# Plans are stored here for the lifetime of the process.  The store is keyed
+# by plan_id.  Each entry is a plain dict that mirrors what PlanService used
+# to return from the DB, so callers outside this module (chats.py, plans.py)
+# can keep a thin compatibility shim via PlanStore helpers below.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_PLAN_STORE: Dict[str, Dict[str, Any]] = {}
+_PLAN_STORE_LOCK = threading.Lock()
+
+
+def _store_plan(plan_dict: Dict[str, Any]) -> None:
+    with _PLAN_STORE_LOCK:
+        _PLAN_STORE[plan_dict["plan_id"]] = plan_dict
+
+
+def _get_stored_plan(plan_id: str) -> Optional[Dict[str, Any]]:
+    with _PLAN_STORE_LOCK:
+        return _PLAN_STORE.get(plan_id)
+
+
+def _update_stored_plan(plan_id: str, **kwargs: Any) -> Optional[Dict[str, Any]]:
+    with _PLAN_STORE_LOCK:
+        plan = _PLAN_STORE.get(plan_id)
+        if plan is None:
+            return None
+        plan.update(kwargs)
+        plan["updated_at"] = datetime.utcnow().isoformat()
+        return plan
+
+
+def _update_stored_step(plan_id: str, step_id: str, **kwargs: Any) -> bool:
+    with _PLAN_STORE_LOCK:
+        plan = _PLAN_STORE.get(plan_id)
+        if plan is None:
+            return False
+        for step in plan.get("steps", []):
+            if step["step_id"] == step_id:
+                step.update(kwargs)
+                return True
+        return False
+
+
+def _replace_stored_steps(plan_id: str, new_steps: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Replace all steps of a plan (for replan). Generates new step_ids."""
+    with _PLAN_STORE_LOCK:
+        plan = _PLAN_STORE.get(plan_id)
+        if plan is None:
+            return None
+        plan["steps"] = [
+            {
+                "step_id": f"{plan_id}_step_{i + 1}",
+                "step_order": i + 1,
+                "title": s.get("title", f"步骤{i+1}"),
+                "brief_description": s.get("brief_description", ""),
+                "description": s.get("description", ""),
+                "expected_tools": s.get("expected_tools", []),
+                "expected_skills": s.get("expected_skills", []),
+                "expected_agents": s.get("expected_agents", []),
+                "status": "pending",
+                "result_summary": None,
+                "ai_output": None,
+                "error_message": None,
+                "started_at": None,
+                "completed_at": None,
+                "tool_calls_log": [],
+            }
+            for i, s in enumerate(new_steps)
+        ]
+        plan["total_steps"] = len(plan["steps"])
+        plan["updated_at"] = datetime.utcnow().isoformat()
+        return plan
+
+
+def _make_plan_dict(
+    plan_id: str,
+    user_id: str,
+    title: str,
+    description: str,
+    task_input: str,
+    steps: List[Dict[str, Any]],
+    extra_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Construct a fresh plan dict for the in-memory store."""
+    now = datetime.utcnow().isoformat()
+    step_list = [
+        {
+            "step_id": f"{plan_id}_step_{i + 1}",
+            "step_order": i + 1,
+            "title": s.get("title", f"步骤{i+1}"),
+            "brief_description": s.get("brief_description", ""),
+            "description": s.get("description", ""),
+            "expected_tools": s.get("expected_tools", []),
+            "expected_skills": s.get("expected_skills", []),
+            "expected_agents": s.get("expected_agents", []),
+            "status": "pending",
+            "result_summary": None,
+            "ai_output": None,
+            "error_message": None,
+            "started_at": None,
+            "completed_at": None,
+            "tool_calls_log": [],
+        }
+        for i, s in enumerate(steps)
+    ]
+    return {
+        "plan_id": plan_id,
+        "user_id": user_id,
+        "title": title,
+        "description": description,
+        "task_input": task_input,
+        "status": "draft",
+        "total_steps": len(step_list),
+        "completed_steps": 0,
+        "result_summary": None,
+        "steps": step_list,
+        "extra_data": extra_data or {},
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+# ── Lightweight step proxy (replaces ORM PlanStep) ───────────────────────────
+
+class _StepProxy:
+    """Wraps a step dict so existing code can use attribute access."""
+    __slots__ = ("_d",)
+
+    def __init__(self, d: Dict[str, Any]):
+        object.__setattr__(self, "_d", d)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return object.__getattribute__(self, "_d")[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__getattribute__(self, "_d")[name] = value
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -58,12 +200,13 @@ def _make_context_board() -> Dict[str, Any]:
     """Return a fresh context blackboard as per data_structure/context.md."""
     return {
         "user": {
-            "urgent": None,   # extracted from latest query by user_profile_agent
-            "mem": None,      # retrieved from memory (disabled for now)
+            "urgent": None,
+            "mem": None,
         },
         "plan": {
             "user_goal": None,
-            "steps": [],      # list of {step_id, description, output, risk}
+            "steps": [],      # list of {step_id, brief_description, description, output, suggestion}
+            "plan_suggestion": None,
         },
         "check": {
             "global_constraints": [],
@@ -497,30 +640,72 @@ def _save_task_memory_background(
     quality_score: float,
     failure_reason: str,
     final_solution_summary: str,
-    forced: bool,
+    forced: bool,  # kept for call-site compat; always False now
     key_constraints: List[str],
+    plan_id: Optional[str] = None,
+    step_details: Optional[List[Dict[str, Any]]] = None,
+    plan_suggestion: str = "",
 ) -> None:
-    """Fire-and-forget: distill and save plan skeleton to KV memory after execution."""
+    """Fire-and-forget: distill and save plan skeleton to KV + Graph memory after execution.
+
+    KV: encodes plan experience as a conversation pair — mem0 extracts facts automatically.
+    Graph (when MEM0_GRAPH_ENABLED): stores PlanSkeleton→StepNode→Suggestion relations.
+    Graph stores optimization suggestions (not raw failure reasons) per design doc.
+    """
     if not _mem0_enabled() or not user_id:
         return
 
     async def _save() -> None:
         try:
-            from core.llm.memory import save_conversation
-            status_str = "success" if (success and not forced) else ("forced" if forced else "fail")
+            from core.llm.memory import save_conversation, MEM0_GRAPH_ENABLED
+            status_str = "success" if success else "replan"
             steps_desc = "\n".join(f"{i+1}. {s}" for i, s in enumerate(plan_steps))
 
-            # Use the LLM-free save path: encode experience as a conversation pair
-            # mem0 will extract facts automatically via its fact extraction LLM
+            # ── KV storage: encode as conversation pair ──────────────────────
             user_msg = f"执行了一个计划任务：{user_goal}\n步骤：{steps_desc}"
+            _suggestion_part = f"优化建议：{plan_suggestion}" if plan_suggestion else (
+                f"风险提示：{failure_reason[:150]}" if failure_reason else ""
+            )
             assistant_msg = (
                 f"计划执行{status_str}，质量评分 {quality_score:.2f}。"
-                f"{'失败原因：' + failure_reason if failure_reason else ''}"
+                f"{_suggestion_part}"
                 f"关键约束：{'; '.join(key_constraints[:3]) if key_constraints else '无'}。"
                 f"结果摘要：{final_solution_summary[:200] if final_solution_summary else '无'}"
             )
             await save_conversation(user_id, user_msg, assistant_msg)
-            logger.info("[Memory] plan memory saved for user=%s, status=%s", user_id, status_str)
+            logger.info("[Memory] plan KV memory saved for user=%s, status=%s", user_id, status_str)
+
+            # ── Graph storage (only when Neo4j is enabled) ───────────────────
+            # PlanSkeleton -has-> StepNode; PlanSkeleton -refer-> Suggestion (replan only)
+            if MEM0_GRAPH_ENABLED and plan_id:
+                pid = plan_id[:16]
+                step_nodes = step_details or [{"title": s, "step_id": f"s{i+1}"} for i, s in enumerate(plan_steps)]
+
+                node_lines = []
+                for i, s in enumerate(step_nodes):
+                    title = s.get("title") or (plan_steps[i] if i < len(plan_steps) else f"步骤{i+1}")
+                    sid = s.get("step_id", f"step_{i+1}")[:12]
+                    dep = f" 依赖于 {step_nodes[i-1].get('step_id', f'step_{i}')[:12]}" if i > 0 else ""
+                    node_lines.append(f"节点 {sid}（{title}）{dep}")
+
+                # Graph stores suggestion (not failure reason) per write.md spec
+                suggestion_line = ""
+                if not success and plan_suggestion:
+                    suggestion_line = f"\n计划骨架 {pid} 参考优化建议：{plan_suggestion[:150]}"
+                elif not success and failure_reason:
+                    suggestion_line = f"\n计划骨架 {pid} 参考优化建议：{failure_reason[:150]}"
+
+                graph_user_msg = (
+                    f"计划骨架 {pid} 包含以下步骤节点：\n"
+                    + "\n".join(node_lines)
+                    + suggestion_line
+                )
+                graph_assistant_msg = (
+                    f"计划骨架 {pid} 的任务类型：{user_goal[:60]}，执行状态：{status_str}。"
+                )
+                await save_conversation(user_id, graph_user_msg, graph_assistant_msg)
+                logger.info("[Memory] plan Graph memory saved for plan_id=%s", plan_id)
+
         except Exception as exc:
             logger.debug("[Memory] plan memory save failed (non-critical): %s", exc)
 
@@ -746,6 +931,7 @@ _PLANNER_PROMPT_TEMPLATE = """你是 Planner Agent，负责将用户任务拆解
     {{
       "step_id": "step_1",
       "title": "步骤标题",
+      "brief_description": "步骤任务的一句话简述（10字以内）",
       "description": "只描述任务目标，不包含约束、格式、实现方式",
       "expected_tools": [],
       "expected_skills": [],
@@ -758,6 +944,36 @@ _PLANNER_PROMPT_TEMPLATE = """你是 Planner Agent，负责将用户任务拆解
 - 每个 step 只描述「做什么」，不写「如何做」
 - 不生成局部约束或输出格式
 - 如果有 replan_context，必须利用 failure_reason 做修正"""
+
+
+_INTENT_CLASSIFY_PROMPT = """你是意图分类助手。根据用户的回复，判断他们的意图。
+
+## 用户回复
+{user_reply}
+
+## 判断规则
+- 如果用户的意思是"同意/确认/开始执行当前计划"，输出 "confirm"
+- 如果用户的意思是"不满意/想重新规划/有新的建议/修改计划"，输出 "replan"
+
+只输出以下 JSON：
+{{"intent": "confirm|replan"}}"""
+
+
+async def _classify_user_intent(user_reply: str, model_name: str, user_id: str) -> str:
+    """Classify user reply as 'confirm' (execute plan) or 'replan' (redo planning).
+
+    Returns 'confirm' or 'replan'.
+    """
+    prompt = _INTENT_CLASSIFY_PROMPT.format(user_reply=user_reply[:500])
+    try:
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=20)
+        data = _parse_json_output(text)
+        if data and data.get("intent") in ("confirm", "replan"):
+            return data["intent"]
+    except Exception as exc:
+        logger.debug("[IntentClassify] failed: %s", exc)
+    # Default: treat ambiguous reply as confirm to avoid blocking execution
+    return "confirm"
 
 
 async def _run_planner(
@@ -805,9 +1021,10 @@ async def _run_planner(
             board["plan"]["steps"] = [
                 {
                     "step_id": s.get("step_id", f"step_{i+1}"),
+                    "brief_description": s.get("brief_description", ""),
                     "description": s.get("description", s.get("title", "")),
                     "output": None,
-                    "risk": None,
+                    "suggestion": None,
                 }
                 for i, s in enumerate(data.get("steps", []))
             ]
@@ -951,24 +1168,18 @@ Step 5: 对 context 中 user 和 plan 整体进行 LLM judge，判断是否偏�
 请严格输出以下 JSON：
 {{
   "verdict": "PASS|REDO_STEP|REPLAN",
-  "checks": {{
-    "schema_satisfied": true,
-    "local_constraint_satisfied": true,
-    "global_constraint_satisfied": true,
-    "assumptions_consistent": true,
-    "soft_constraint_passed": true,
-    "goal_alignment_confidence": 1.0
-  }},
   "failure_reason": [
     {{
-      "type": "execution_error|goal_misalignment",
+      "local_constraint_satisfied": true,
+      "global_constraint_satisfied": true,
       "description": "失败原因描述",
-      "violated": "被违反的约束或标准",
-      "evidence": "证据",
-      "confidence": 0.0
+      "confidence": 0.0,
+      "suggestion": "针对此失败给出的优化建议，供重做的 agent 或 planner 参考"
     }}
   ]
 }}
+
+注意：Step 5（goal_alignment_confidence）请将其作为一条 failure_reason 条目的 confidence 字段反映，local_constraint_satisfied 和 global_constraint_satisfied 均填 true，description 写明目标偏离情况。
 
 verdict 规则：
 - Step 1/2/3/4 任意失败 → REDO_STEP
@@ -999,7 +1210,8 @@ _QA_FINAL_PROMPT = """你是 QA Agent，对整个计划的执行结果进行最�
 {{
   "quality_score": 0.0,
   "success": true,
-  "assessment": "简短评价"
+  "assessment": "简短评价",
+  "plan_suggestion": "针对整个计划的优化建议（无论成功或失败均填写，若无则填空字符串）"
 }}
 
 quality_score 在 0.0-1.0 之间。"""
@@ -1035,7 +1247,7 @@ async def _run_qa(
             return data
     except Exception as exc:
         logger.warning("[QA] failed: %s", exc)
-    return {"verdict": "PASS", "checks": {}, "failure_reason": []}
+    return {"verdict": "PASS", "failure_reason": []}
 
 
 async def _run_qa_final(
@@ -1434,14 +1646,50 @@ async def astream_generate_plan(
     enabled_agent_ids: Optional[List[str]] = None,
     session_messages: Optional[List[Dict[str, Any]]] = None,
     uploaded_files: Optional[List[Dict[str, Any]]] = None,
+    previous_plan_id: Optional[str] = None,
+    user_reply: Optional[str] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """Phase 1: UserProfile + Planner in parallel, then persist plan.
 
+    When previous_plan_id and user_reply are provided:
+    - Classify user intent: 'confirm' → caller should execute; 'replan' → save rejected
+      plan to memory then re-generate plan with user suggestions.
+
     Yields SSE events:
+    - plan_intent      {intent: 'confirm'|'replan'}  (only when user_reply provided)
     - plan_generating  {delta: str}
     - plan_generated   {plan_id, title, description, steps: [...]}
     - plan_error       {error: str}
     """
+    # ── Intent classification (when responding to a shown plan) ──────────────
+    if user_reply and previous_plan_id:
+        intent = await _classify_user_intent(user_reply, model_name, user_id)
+        yield {"type": "plan_intent", "intent": intent, "plan_id": previous_plan_id}
+
+        if intent == "confirm":
+            # Signal frontend to execute; no further action here
+            yield {"type": "plan_confirm", "plan_id": previous_plan_id}
+            return
+
+        # intent == "replan": save rejected plan to memory, then fall through to re-plan
+        prev_plan = _get_stored_plan(previous_plan_id)
+        if prev_plan:
+            _save_task_memory_background(
+                user_id=user_id,
+                user_goal=prev_plan.get("extra_data", {}).get("user_goal", prev_plan.get("title", "")),
+                plan_steps=[s.get("title", "") for s in prev_plan.get("steps", [])],
+                success=False,
+                quality_score=0.0,
+                failure_reason="",
+                final_solution_summary="",
+                forced=False,
+                key_constraints=[],
+                plan_id=previous_plan_id,
+                step_details=[{"step_id": s["step_id"], "title": s.get("title", "")} for s in prev_plan.get("steps", [])],
+                plan_suggestion=f"用户拒绝该方案并给出建议：{user_reply[:200]}",
+            )
+        yield {"type": "plan_generating", "delta": "已记录您的建议，正在重新制定计划...\n"}
+
     visible_agents = _load_visible_agents(db, user_id, enabled_agent_ids)
     tools_desc = _build_tools_description(enabled_mcp_ids, enabled_skill_ids, visible_agents)
 
@@ -1449,7 +1697,8 @@ async def astream_generate_plan(
     # (will be re-built fresh at execution time; here just for planner context)
     board = _make_context_board()
 
-    yield {"type": "plan_generating", "delta": "正在分析用户特征并查询历史记忆...\n"}
+    if not (user_reply and previous_plan_id):
+        yield {"type": "plan_generating", "delta": "正在分析用户特征并查询历史记忆...\n"}
 
     # Run UserProfile Agent and memory retrieval in parallel
     retrieved_memory, _ = await asyncio.gather(
@@ -1493,31 +1742,57 @@ async def astream_generate_plan(
                 if a in _valid_agents
             ]
 
-        # Persist to DB
-        svc = PlanService(db)
-        plan = svc.create_plan(
-            user_id=user_id,
-            title=plan_data.get("title", "未命名计划"),
-            description=plan_data.get("description", ""),
-            task_input=task_description,
-            steps=plan_data.get("steps", []),
-        )
-
+        # Store plan in memory (no DB persistence for plan content)
+        plan_id = f"plan_{uuid.uuid4().hex[:16]}"
         agent_name_map = {a.get("agent_id"): a.get("name", a.get("agent_id", "")) for a in visible_agents} if visible_agents else {}
 
         extra: Dict[str, Any] = {
             "user_goal": plan_data.get("user_goal", task_description),
             "retrieved_memory": retrieved_memory,
-            # Persist user profile extracted during generation for reuse at execution
             "user_profile": board.get("user", {}),
         }
         if uploaded_files:
             extra["uploaded_files"] = uploaded_files
         if agent_name_map:
             extra["agent_name_map"] = agent_name_map
-        svc.update_plan(plan.plan_id, extra_data=extra)
 
-        event = {"type": "plan_generated", **PlanService.plan_to_dict(plan)}
+        plan_dict = _make_plan_dict(
+            plan_id=plan_id,
+            user_id=user_id,
+            title=plan_data.get("title", "未命名计划"),
+            description=plan_data.get("description", ""),
+            task_input=task_description,
+            steps=plan_data.get("steps", []),
+            extra_data=extra,
+        )
+        _store_plan(plan_dict)
+
+        event: Dict[str, Any] = {
+            "type": "plan_generated",
+            "plan_id": plan_id,
+            "title": plan_dict["title"],
+            "description": plan_dict["description"],
+            "task_input": plan_dict["task_input"],
+            "status": plan_dict["status"],
+            "total_steps": plan_dict["total_steps"],
+            "completed_steps": 0,
+            "result_summary": None,
+            "steps": [
+                {
+                    "step_id": s["step_id"],
+                    "step_order": s["step_order"],
+                    "title": s["title"],
+                    "brief_description": s.get("brief_description", ""),
+                    "description": s["description"],
+                    "expected_tools": s["expected_tools"],
+                    "expected_skills": s["expected_skills"],
+                    "expected_agents": s["expected_agents"],
+                    "status": s["status"],
+                    "result_summary": None,
+                }
+                for s in plan_dict["steps"]
+            ],
+        }
         if agent_name_map:
             event["agent_name_map"] = agent_name_map
         yield event
@@ -1549,36 +1824,35 @@ async def astream_execute_plan(
     - plan_step_start     {step_id, step_order, title}
     - plan_step_progress  {step_id, delta: str}
     - tool_call / tool_result  {step_id, ...}
-    - plan_step_qa        {step_id, verdict, checks}
+    - plan_step_qa        {step_id, verdict}
     - plan_step_complete  {step_id, status, summary}
     - plan_error          {plan_id, step_id?, error}
     - plan_complete       {plan_id, status, summary, ...}
     """
     logger.warning("[plan-exec] astream_execute_plan called for plan_id=%s", plan_id)
 
-    svc = PlanService(db)
-    plan = svc.get_plan(plan_id, user_id)
-    if not plan:
+    plan_dict = _get_stored_plan(plan_id)
+    if not plan_dict or plan_dict.get("user_id") != user_id:
         yield {"type": "plan_error", "plan_id": plan_id, "error": "计划不存在"}
         return
 
-    if plan.status not in ("approved", "running"):
-        yield {"type": "plan_error", "plan_id": plan_id, "error": f"计划状态 '{plan.status}' 不可执行"}
+    if plan_dict["status"] not in ("approved", "running"):
+        yield {"type": "plan_error", "plan_id": plan_id, "error": f"计划状态 '{plan_dict['status']}' 不可执行"}
         return
 
-    plan_meta = plan.extra_data or {}
-    if not uploaded_files and isinstance(plan_meta, dict):
+    plan_meta = plan_dict.get("extra_data") or {}
+    if not uploaded_files:
         uploaded_files = plan_meta.get("uploaded_files")
 
-    user_goal = plan_meta.get("user_goal", plan.task_input)
+    user_goal = plan_meta.get("user_goal", plan_dict["task_input"])
     plan_retrieved_memory = plan_meta.get("retrieved_memory", {})
     saved_user_profile = plan_meta.get("user_profile", {})
 
-    svc.update_plan(plan_id, status="running")
+    _update_stored_plan(plan_id, status="running")
     completed_count = 0
     cancelled = False
 
-    _chat_hint = plan_meta.get("chat_id") if isinstance(plan_meta, dict) else None
+    _chat_hint = plan_meta.get("chat_id")
     _log_ctx = LogContext(user_id=user_id or None, chat_id=_chat_hint)
     _log_ctx.__enter__()
 
@@ -1589,10 +1863,10 @@ async def astream_execute_plan(
         "subagent_id": plan_id,
         "plan_id": plan_id,
         "model": model_name,
-        "step_title": plan.title,
+        "step_title": plan_dict["title"],
         "input_messages": {
-            "task_input": plan.task_input,
-            "total_steps": plan.total_steps,
+            "task_input": plan_dict["task_input"],
+            "total_steps": plan_dict["total_steps"],
         },
     })
     _plan_tool_count = 0
@@ -1608,16 +1882,17 @@ async def astream_execute_plan(
     if saved_user_profile:
         board["user"].update(saved_user_profile)
 
-    # Seed board with planner's output (from DB)
+    # Seed board with planner's output (from memory store)
     board["plan"]["user_goal"] = user_goal
     board["plan"]["steps"] = [
         {
-            "step_id": s.step_id,
-            "description": s.description or s.title,
+            "step_id": s["step_id"],
+            "brief_description": s.get("brief_description", ""),
+            "description": s.get("description") or s.get("title", ""),
             "output": None,
-            "risk": None,
+            "suggestion": None,
         }
-        for s in plan.steps
+        for s in plan_dict["steps"]
     ]
 
     # ── Warmup Phase ──────────────────────────────────────────────────────────
@@ -1628,7 +1903,7 @@ async def astream_execute_plan(
     }
 
     warmup_result = await _run_warmup(
-        user_input=plan.task_input,
+        user_input=plan_dict["task_input"],
         user_id=user_id,
         model_name=model_name,
         retrieved_memory=warmup_memory,
@@ -1657,28 +1932,27 @@ async def astream_execute_plan(
 
     # Control flow counters
     local_replan_count = 0   # replans from current failure point
-    global_reset_count = 0   # full plan resets
-    forced_mode = False
+    global_reset_count = 0   # full plan resets (each triggers SSE interrupt + new plan)
 
     try:
         step_idx = 0
-        steps = list(plan.steps)
+        steps = [_StepProxy(s) for s in plan_dict["steps"]]
 
         while step_idx < len(steps):
             step = steps[step_idx]
 
-            logger.warning("[plan-exec] === Step %d/%d: %s (forced=%s) ===",
-                           step_idx + 1, len(steps), step.title, forced_mode)
+            logger.warning("[plan-exec] === Step %d/%d: %s ===",
+                           step_idx + 1, len(steps), step.title)
 
             if cancelled:
-                svc.update_step(step.step_id, status="skipped")
+                _update_stored_step(plan_id, step.step_id, status="skipped")
                 step_idx += 1
                 continue
 
-            db.refresh(plan)
-            if plan.status == "cancelled":
+            current_status = (_get_stored_plan(plan_id) or {}).get("status", "running")
+            if current_status == "cancelled":
                 cancelled = True
-                svc.update_step(step.step_id, status="skipped")
+                _update_stored_step(plan_id, step.step_id, status="skipped")
                 step_idx += 1
                 continue
 
@@ -1689,7 +1963,7 @@ async def astream_execute_plan(
                 "title": step.title,
             }
             yield {"type": "heartbeat"}
-            svc.update_step(step.step_id, status="running", started_at=datetime.utcnow())
+            _update_stored_step(plan_id, step.step_id, status="running", started_at=datetime.utcnow().isoformat())
 
             step_memory = await _retrieve_step_memory(user_id, step.description or step.title)
             next_step = steps[step_idx + 1] if step_idx + 1 < len(steps) else None
@@ -1733,27 +2007,21 @@ async def astream_execute_plan(
 
                 narrative_text, subagent_json = _extract_next_step_instruction(step_text)
 
-                if forced_mode:
-                    qa_verdict = "PASS"
-                    qa_data = {"verdict": "PASS", "forced": True}
-                else:
-                    qa_data = await _run_qa(
-                        step=step,
-                        result=narrative_text or step_text,
-                        board=board,
-                        local_constraint=current_local_constraint,
-                        expected_schema=current_expected_schema,
-                        model_name=model_name,
-                        user_id=user_id,
-                    )
-                    qa_verdict = qa_data.get("verdict", "PASS")
+                qa_data = await _run_qa(
+                    step=step,
+                    result=narrative_text or step_text,
+                    board=board,
+                    local_constraint=current_local_constraint,
+                    expected_schema=current_expected_schema,
+                    model_name=model_name,
+                    user_id=user_id,
+                )
+                qa_verdict = qa_data.get("verdict", "PASS")
 
                 yield {
                     "type": "plan_step_qa",
                     "step_id": step.step_id,
                     "verdict": qa_verdict,
-                    "checks": qa_data.get("checks", {}),
-                    "forced": forced_mode,
                 }
 
                 if qa_verdict == "PASS":
@@ -1763,10 +2031,14 @@ async def astream_execute_plan(
                     redo_count += 1
                     redo_failure_reason = qa_data.get("failure_reason", [])
                     logger.warning("[QA] REDO_STEP step=%d redo=%d", step.step_order, redo_count)
-                    # Write failure reason to context board step risk field
+                    # Accumulate QA suggestions into context board step suggestion field
+                    _new_suggestions = "; ".join(
+                        r.get("suggestion", "") for r in redo_failure_reason if r.get("suggestion")
+                    )
                     for board_step in board["plan"]["steps"]:
                         if board_step["step_id"] == step.step_id:
-                            board_step["risk"] = redo_failure_reason
+                            existing = board_step.get("suggestion") or ""
+                            board_step["suggestion"] = (existing + "; " + _new_suggestions).strip("; ") if _new_suggestions else existing
                             break
                     if redo_count >= _MAX_REDO_PER_STEP:
                         # Escalate to local REPLAN
@@ -1783,89 +2055,107 @@ async def astream_execute_plan(
                 break  # unknown verdict → treat as PASS
 
             # ── Handle REPLAN ─────────────────────────────────────────────────
-            if qa_verdict == "REPLAN" and not forced_mode:
+            if qa_verdict == "REPLAN":
                 local_replan_count += 1
                 logger.warning("[plan-exec] REPLAN triggered at step %d (local_count=%d, global_reset=%d)",
                                step.step_order, local_replan_count, global_reset_count)
 
-                if local_replan_count > _MAX_LOCAL_REPLAN:
-                    # Trigger full global reset
+                if local_replan_count >= _MAX_LOCAL_REPLAN:
+                    # Trigger full global reset: interrupt execution, replan from scratch,
+                    # send new plan to frontend for user confirmation (no Forced mode).
                     global_reset_count += 1
-                    if global_reset_count > _MAX_GLOBAL_RESET:
-                        # Enter Forced mode
-                        logger.warning("[plan-exec] Global reset limit exceeded → Forced mode")
-                        forced_mode = True
-                        local_replan_count = 0
-                        yield {"type": "plan_step_progress", "step_id": step.step_id,
-                               "delta": "\n已进入 Forced 模式，QA 验证将跳过，继续执行至结束。\n"}
-                        # Fall through to finalize current step
-                    else:
-                        # Full global reset: replan from scratch
-                        logger.warning("[plan-exec] Full global reset #%d", global_reset_count)
-                        local_replan_count = 0
-                        yield {"type": "plan_step_progress", "step_id": step.step_id,
-                               "delta": f"\n触发全局重新规划（第 {global_reset_count} 次整体重置）...\n"}
+                    logger.warning("[plan-exec] Global reset #%d triggered at step %d",
+                                   global_reset_count, step.step_order)
 
-                        replan_memory = await _retrieve_plan_memory(user_id, plan.task_input)
-                        replan_ctx = {
-                            "complete": True,
-                            "failed_step": step.step_order,
-                            "failure_reason": qa_data.get("failure_reason", []),
-                        }
-                        new_plan_data = await _run_planner(
-                            user_input=plan.task_input,
-                            user_id=user_id,
-                            model_name=model_name,
-                            tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
-                            retrieved_memory=replan_memory,
-                            board=board,
-                            replan_context=replan_ctx,
-                        )
+                    failure_summary = "; ".join(
+                        r.get("description", "") for r in qa_data.get("failure_reason", []) if r.get("description")
+                    ) or "执行方案无法达到预期效果"
 
-                        if new_plan_data and new_plan_data.get("steps"):
-                            remaining_steps = new_plan_data["steps"]
-                            _valid_tools = _collect_valid_tool_names(enabled_mcp_ids)
-                            _valid_skills = set(enabled_skill_ids) if enabled_skill_ids is not None else None
-                            _valid_agents = {a.get("agent_id") for a in _load_visible_agents(db, user_id, enabled_agent_ids)}
-                            for sd in remaining_steps:
-                                if _valid_tools is not None:
-                                    sd["expected_tools"] = [t for t in (sd.get("expected_tools") or []) if t in _valid_tools]
-                                if _valid_skills is not None:
-                                    sd["expected_skills"] = [s for s in (sd.get("expected_skills") or []) if s in _valid_skills]
-                                sd["expected_agents"] = [a for a in (sd.get("expected_agents") or []) if a in _valid_agents]
+                    # Async: save failed plan to memory with risk annotation
+                    _failed_plan_suggestion = f"该方案在第{step.step_order}步触发全局重置，原因：{failure_summary}"
+                    _save_task_memory_background(
+                        user_id=user_id,
+                        user_goal=board["plan"].get("user_goal", ""),
+                        plan_steps=[s.title for s in steps],
+                        success=False,
+                        quality_score=0.0,
+                        failure_reason=_failed_plan_suggestion,
+                        final_solution_summary="",
+                        forced=False,
+                        key_constraints=[
+                            c.get("constraint", "")
+                            for c in board["check"].get("global_constraints", [])
+                        ],
+                        plan_id=plan_id,
+                        step_details=[{"step_id": s.step_id, "title": s.title} for s in steps],
+                    )
 
-                            all_new_steps = [
-                                {"title": s.get("title", f"步骤{i+1}"), "description": s.get("description", ""),
-                                 "expected_tools": s.get("expected_tools", []),
-                                 "expected_skills": s.get("expected_skills", []),
-                                 "expected_agents": s.get("expected_agents", [])}
-                                for i, s in enumerate(remaining_steps)
-                            ]
-                            updated_plan = svc.replace_steps(plan_id, all_new_steps)
-                            if updated_plan:
-                                db.refresh(updated_plan)
-                                steps = list(updated_plan.steps)
-                                step_idx = 0
-                                # Reset board steps
-                                board["plan"]["steps"] = [
-                                    {"step_id": s.step_id, "description": s.description or s.title, "output": None, "risk": None}
-                                    for s in steps
-                                ]
-                                svc.update_step(steps[step_idx].step_id, status="running", started_at=datetime.utcnow())
-                                continue
+                    replan_memory = await _retrieve_plan_memory(user_id, plan_dict["task_input"])
+                    replan_ctx = {
+                        "complete": True,
+                        "failed_step": step.step_order,
+                        "failure_reason": qa_data.get("failure_reason", []),
+                    }
+                    new_plan_data = await _run_planner(
+                        user_input=plan_dict["task_input"],
+                        user_id=user_id,
+                        model_name=model_name,
+                        tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
+                        retrieved_memory=replan_memory,
+                        board=_make_context_board(),  # fresh board for new plan
+                        replan_context=replan_ctx,
+                    )
+
+                    new_steps = []
+                    if new_plan_data and new_plan_data.get("steps"):
+                        _valid_tools = _collect_valid_tool_names(enabled_mcp_ids)
+                        _valid_skills = set(enabled_skill_ids) if enabled_skill_ids is not None else None
+                        _valid_agents = {a.get("agent_id") for a in _load_visible_agents(db, user_id, enabled_agent_ids)}
+                        for sd in new_plan_data["steps"]:
+                            if _valid_tools is not None:
+                                sd["expected_tools"] = [t for t in (sd.get("expected_tools") or []) if t in _valid_tools]
+                            if _valid_skills is not None:
+                                sd["expected_skills"] = [s for s in (sd.get("expected_skills") or []) if s in _valid_skills]
+                            sd["expected_agents"] = [a for a in (sd.get("expected_agents") or []) if a in _valid_agents]
+                        new_steps = new_plan_data["steps"]
+
+                    # Yield global-reset event and interrupt this execution SSE stream.
+                    # Frontend will display the new plan for user confirmation.
+                    yield {
+                        "type": "plan_global_reset",
+                        "plan_id": plan_id,
+                        "failure_reason": failure_summary,
+                        "reset_count": global_reset_count,
+                        "new_plan": {
+                            "user_goal": new_plan_data.get("user_goal", "") if new_plan_data else "",
+                            "steps": [
+                                {
+                                    "step_order": i + 1,
+                                    "title": s.get("title", f"步骤{i+1}"),
+                                    "brief_description": s.get("brief_description", ""),
+                                    "description": s.get("description", ""),
+                                    "expected_tools": s.get("expected_tools", []),
+                                    "expected_skills": s.get("expected_skills", []),
+                                }
+                                for i, s in enumerate(new_steps)
+                            ],
+                            "total_steps": len(new_steps),
+                        },
+                    }
+                    return  # interrupt execution stream
                 else:
                     # Local replan: re-plan from current failure point
                     yield {"type": "plan_step_progress", "step_id": step.step_id,
                            "delta": f"\nQA 触发局部重新规划（从当前步骤重做）...\n"}
 
-                    replan_memory = await _retrieve_plan_memory(user_id, plan.task_input)
+                    replan_memory = await _retrieve_plan_memory(user_id, plan_dict["task_input"])
                     replan_ctx = {
                         "complete": False,
                         "failed_step": step.step_order,
                         "failure_reason": qa_data.get("failure_reason", []),
                     }
                     new_plan_data = await _run_planner(
-                        user_input=plan.task_input,
+                        user_input=plan_dict["task_input"],
                         user_id=user_id,
                         model_name=model_name,
                         tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
@@ -1888,34 +2178,56 @@ async def astream_execute_plan(
 
                         completed_steps_so_far = steps[:step_idx]
                         all_new_steps = [
-                            {"title": s.get("title", f"步骤{i+1}"), "description": s.get("description", ""),
+                            {"title": s.get("title", f"步骤{i+1}"), "brief_description": s.get("brief_description", ""),
+                             "description": s.get("description", ""),
                              "expected_tools": s.get("expected_tools", []),
                              "expected_skills": s.get("expected_skills", []),
                              "expected_agents": s.get("expected_agents", [])}
                             for i, s in enumerate(remaining_steps)
                         ]
-                        updated_plan = svc.replace_steps(plan_id, [
-                            {"title": s.title, "description": s.description,
-                             "expected_tools": s.expected_tools or [],
-                             "expected_skills": s.expected_skills or [],
-                             "expected_agents": s.expected_agents or []}
+                        merged_steps = [
+                            {"title": s.title, "brief_description": s._d.get("brief_description", ""),
+                             "description": s._d.get("description", ""),
+                             "expected_tools": s._d.get("expected_tools") or [],
+                             "expected_skills": s._d.get("expected_skills") or [],
+                             "expected_agents": s._d.get("expected_agents") or []}
                             for s in completed_steps_so_far
-                        ] + all_new_steps)
-                        if updated_plan:
-                            db.refresh(updated_plan)
-                            steps = list(updated_plan.steps)
-                            # Reset board steps for remaining, preserve output of completed steps
-                            old_steps = board["plan"]["steps"]
+                        ] + all_new_steps
+                        updated = _replace_stored_steps(plan_id, merged_steps)
+                        if updated:
+                            old_board_steps = board["plan"]["steps"]
+                            steps = [_StepProxy(s) for s in updated["steps"]]
                             board["plan"]["steps"] = [
                                 {
-                                    "step_id": s.step_id,
-                                    "description": s.description or s.title,
-                                    "output": old_steps[i]["output"] if i < len(old_steps) else None,
-                                    "risk": old_steps[i]["risk"] if i < len(old_steps) else None,
+                                    "step_id": s["step_id"],
+                                    "brief_description": s.get("brief_description", ""),
+                                    "description": s.get("description") or s.get("title", ""),
+                                    "output": old_board_steps[i]["output"] if i < len(old_board_steps) else None,
+                                    "suggestion": old_board_steps[i].get("suggestion") if i < len(old_board_steps) else None,
                                 }
-                                for i, s in enumerate(steps)
+                                for i, s in enumerate(updated["steps"])
                             ]
-                            svc.update_step(steps[step_idx].step_id, status="running", started_at=datetime.utcnow())
+                            _update_stored_step(plan_id, steps[step_idx].step_id, status="running", started_at=datetime.utcnow().isoformat())
+                            # Notify frontend: local replan happened, steps from step_idx replaced
+                            _replan_reason = "; ".join(
+                                r.get("suggestion", "") or r.get("description", "")
+                                for r in qa_data.get("failure_reason", []) if r.get("suggestion") or r.get("description")
+                            )
+                            yield {
+                                "type": "plan_replan",
+                                "plan_id": plan_id,
+                                "replaced_from_order": step.step_order,
+                                "reason": _replan_reason or "为了保证执行成功率，已自动优化后续步骤",
+                                "new_steps": [
+                                    {
+                                        "step_id": s["step_id"],
+                                        "step_order": s["step_order"],
+                                        "title": s.get("title", ""),
+                                        "brief_description": s.get("brief_description", ""),
+                                    }
+                                    for s in updated["steps"][step_idx:]
+                                ],
+                            }
                             continue
 
             # ── Finalize step ─────────────────────────────────────────────────
@@ -1950,15 +2262,14 @@ async def astream_execute_plan(
                 else "failed"
             )
 
-            svc.update_step(
+            _update_stored_step(
+                plan_id,
                 step.step_id,
                 status=_final_step_status,
                 result_summary=summary,
                 ai_output=display_text[:5000],
                 tool_calls_log=step_tool_calls,
-                completed_at=datetime.utcnow(),
-                local_constraint=current_local_constraint or None,
-                next_step_instruction=next_instr or None,
+                completed_at=datetime.utcnow().isoformat(),
             )
 
             if _final_step_status == "success":
@@ -1971,8 +2282,8 @@ async def astream_execute_plan(
                 local_constraint=current_local_constraint,
                 output_schema=current_expected_schema,
                 result_quality="high" if _final_step_status == "success" and qa_verdict == "PASS" else "low",
-                error_pattern=str(qa_data.get("failure_reason", [{}])[0].get("type", "")) if qa_verdict != "PASS" else "",
-                improvement_hint=str(qa_data.get("failure_reason", [{}])[0].get("description", "")) if qa_verdict != "PASS" else "",
+                error_pattern=str(qa_data.get("failure_reason", [{}])[0].get("description", "")) if qa_verdict != "PASS" else "",
+                improvement_hint=str(qa_data.get("failure_reason", [{}])[0].get("suggestion", "")) if qa_verdict != "PASS" else "",
                 model_name=model_name,
             )
 
@@ -1994,8 +2305,8 @@ async def astream_execute_plan(
             step_idx += 1
 
         # ── Plan complete ─────────────────────────────────────────────────────
-        logger.warning("[plan-exec] === All steps done. completed=%d/%d forced=%s ===",
-                       completed_count, len(steps), forced_mode)
+        logger.warning("[plan-exec] === All steps done. completed=%d/%d ===",
+                       completed_count, len(steps))
 
         final_status = "completed" if completed_count == len(steps) else "failed"
         if cancelled:
@@ -2004,7 +2315,6 @@ async def astream_execute_plan(
         overall_summary = f"共 {len(steps)} 个步骤，完成 {completed_count} 个"
         result_text = last_step_text
 
-        # QA final check (always runs, even in forced mode — just doesn't trigger replans)
         qa_final = await _run_qa_final(
             board=board,
             final_output=result_text,
@@ -2013,10 +2323,8 @@ async def astream_execute_plan(
         )
         quality_score = qa_final.get("quality_score", 0.8)
         task_success = qa_final.get("success", True) and final_status == "completed"
-        if forced_mode:
-            task_success = None
 
-        svc.update_plan(
+        _update_stored_plan(
             plan_id,
             status=final_status,
             completed_steps=completed_count,
@@ -2024,19 +2332,26 @@ async def astream_execute_plan(
         )
 
         _final_failure_reason = qa_final.get("assessment", "") if not task_success else ""
+        _final_plan_suggestion = qa_final.get("plan_suggestion", "")
+        # Write QA plan suggestion to context board
+        if _final_plan_suggestion:
+            board["plan"]["plan_suggestion"] = _final_plan_suggestion
         _save_task_memory_background(
             user_id=user_id,
             user_goal=board["plan"].get("user_goal", ""),
             plan_steps=[s.title for s in steps],
-            success=bool(task_success) if task_success is not None else False,
+            success=bool(task_success),
             quality_score=quality_score,
             failure_reason=_final_failure_reason,
             final_solution_summary=result_text[:500],
-            forced=forced_mode,
+            forced=False,
             key_constraints=[
                 c.get("constraint", "")
                 for c in board["check"].get("global_constraints", [])
             ],
+            plan_id=plan_id,
+            step_details=[{"step_id": s.step_id, "title": s.title} for s in steps],
+            plan_suggestion=_final_plan_suggestion,
         )
 
         records = _cumulative_usage.usage_records
@@ -2056,10 +2371,9 @@ async def astream_execute_plan(
             "summary": overall_summary,
             "result_text": result_text,
             "completed_steps": completed_count,
-            "total_steps": plan.total_steps,
+            "total_steps": plan_dict["total_steps"],
             "usage": exec_usage,
             "quality_score": quality_score,
-            "forced_mode": forced_mode,
         }
 
         await log_writer.finish_subagent_log(
@@ -2074,7 +2388,7 @@ async def astream_execute_plan(
 
     except Exception as exc:
         logger.exception("Plan execution failed")
-        svc.update_plan(plan_id, status="failed", result_summary=str(exc))
+        _update_stored_plan(plan_id, status="failed", result_summary=str(exc))
         await log_writer.finish_subagent_log(
             _plan_subagent_log_id,
             status="failed",

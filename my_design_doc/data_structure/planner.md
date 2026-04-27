@@ -9,18 +9,12 @@ input:
 
   //从memory中查找，记得用完别扔掉，warmup_agent也要用这个
   "retrieved_memory": {
-    // 相似任务（用于参考 plan 的step制定）
+    // 相似任务（用于参考 plan 的step制定，查找的是相似任务，可以是之前成功的也可以是失败的，记忆中带着对应的优化建议）
     "similar_tasks": [...],
-
-    // 相关的历史失败记录（用于规避）
-    "failure_patterns": [...]
   },
 
-  //QA触发REPLAN时才不为空
+  //QA触发REPLAN时才不为空。注意这里不再区分是否是全局重置，因为全局重置直接视为完全重新plan
   "replan_context": {
-    //是否是彻底replan（从头开始而不是从当前step开始）,如果不是则从当前出问题步骤开始重新规划
-    "complete": false,
-
     // replan触发发生在哪一步
     "failed_step": 2,
 

@@ -65,6 +65,7 @@ export function buildPlanSegmentData(planData: Record<string, unknown>): Message
     steps: steps.map(s => ({
       step_order: Number(s.step_order || 0),
       title: String(s.title || ''),
+      brief_description: s.brief_description ? String(s.brief_description) : undefined,
       description: s.description ? String(s.description) : undefined,
       expected_tools: (s.expected_tools as string[]) || [],
       expected_skills: (s.expected_skills as string[]) || [],
@@ -92,7 +93,9 @@ export async function sendPlanMode(
     return;
   }
 
-  const isConfirm = currentPlanId && /^(确认执行|确认|执行|开始执行|yes|ok|确定)$/i.test(msg);
+  // When there's a pending plan, always route through intent classification on /generate.
+  // Backend LLM decides: confirm → execute, replan → generate new plan.
+  const hasPendingPlan = !!currentPlanId;
 
   const streamChatId = currentChatId;
   addSendingChatId(streamChatId);
@@ -159,151 +162,241 @@ export async function sendPlanMode(
   const abortController = new AbortController();
   abortControllersRef.current.set(streamChatId, abortController);
 
-  try {
-    if (isConfirm && currentPlanId) {
-      // Phase 2: Execute confirmed plan
-      appendAssistant('正在执行计划...', true);
+  // Execute an approved plan, streaming step-by-step updates.
+  // Returns true if execution started, false on global reset (new plan shown instead).
+  const runExecutePlan = async (planIdToExec: string) => {
+    appendAssistant('正在执行计划...', true);
+    await updatePlanApi(planIdToExec, { status: 'approved' });
+    const execResp = await executePlanStream(planIdToExec, abortController.signal, enabledMcpIds, enabledSkillIds, enabledKbIds, currentChatId, historyMessages);
+    if (!execResp.ok) throw new Error(`计划执行请求失败: ${execResp.status}`);
 
-      await updatePlanApi(currentPlanId, { status: 'approved' });
-      const execResp = await executePlanStream(currentPlanId, abortController.signal, enabledMcpIds, enabledSkillIds, enabledKbIds, currentChatId, historyMessages);
-      if (!execResp.ok) throw new Error(`计划执行请求失败: ${execResp.status}`);
+    const decoder = new TextDecoder();
+    const execReader = execResp.body?.getReader();
+    if (!execReader) throw new Error('No response body');
+    let execBuf = '';
+    const stepResults: Record<string, { status: string; summary: string; text: string; title: string; order: number; step_id: string; replaced?: boolean; is_replan_new?: boolean; replan_reason?: string }> = {};
+    const toolCalls: ToolCall[] = [];
+    let planTitle = '';
+    let planDesc = '';
+    let planStepDefs: Array<Record<string, unknown>> = [];
+    let planCompleted = false;
+    let planAgentNameMap: Record<string, string> | undefined;
 
-      const decoder = new TextDecoder();
-      const execReader = execResp.body?.getReader();
-      if (!execReader) throw new Error('No response body');
-      let execBuf = '';
-      const stepResults: Record<string, { status: string; summary: string; text: string; title: string; order: number; step_id: string }> = {};
-      const toolCalls: ToolCall[] = [];
-      let planTitle = '';
-      let planDesc = '';
-      let planStepDefs: Array<Record<string, unknown>> = [];
-      let planCompleted = false;
-      let planAgentNameMap: Record<string, string> | undefined;
+    try {
+      const plan = await getPlanApi(planIdToExec);
+      planTitle = plan.title;
+      planDesc = plan.description || '';
+      planStepDefs = plan.steps as any[];
+      planAgentNameMap = (plan as any).agent_name_map || undefined;
+    } catch { /* fallback */ }
 
-      try {
-        const plan = await getPlanApi(currentPlanId);
-        planTitle = plan.title;
-        planDesc = plan.description || '';
-        planStepDefs = plan.steps as any[];
-        planAgentNameMap = (plan as any).agent_name_map || undefined;
-      } catch { /* fallback */ }
-
-      const buildExecPlanData = (mode: 'executing' | 'complete', completedSteps?: number, totalSteps?: number, resultText?: string): MessageSegment['planData'] => {
-        const stepSource = planStepDefs.length > 0 ? planStepDefs : Object.values(stepResults).sort((a, b) => a.order - b.order);
-        const steps = stepSource.map(s => {
-          const sid = (s as any).step_id;
-          const r = sid ? stepResults[sid] : undefined;
-          return {
-            step_order: r?.order || (s as any).step_order || 0,
-            title: r?.title || (s as any).title || '',
-            description: (s as any).description,
-            status: (r?.status || 'pending') as any,
-            summary: r?.summary || '',
-            text: r?.text || '',
-          };
-        });
+    const buildExecPlanData = (mode: 'executing' | 'complete', completedSteps?: number, totalSteps?: number, resultText?: string): MessageSegment['planData'] => {
+      const stepSource = planStepDefs.length > 0 ? planStepDefs : Object.values(stepResults).sort((a, b) => a.order - b.order);
+      const steps = stepSource.map(s => {
+        const sid = (s as any).step_id;
+        const r = sid ? stepResults[sid] : undefined;
         return {
-          mode,
-          title: planTitle || '执行中...',
-          description: planDesc || undefined,
-          steps,
-          completedSteps,
-          totalSteps,
-          resultText,
-          agentNameMap: planAgentNameMap,
+          step_order: r?.order || (s as any).step_order || 0,
+          title: r?.title || (s as any).title || '',
+          brief_description: (s as any).brief_description || undefined,
+          description: (s as any).description,
+          status: (r?.status || 'pending') as any,
+          summary: r?.summary || '',
+          text: r?.text || '',
+          replaced: r?.replaced,
+          is_replan_new: r?.is_replan_new,
+          replan_reason: r?.replan_reason,
         };
+      });
+      return {
+        mode,
+        title: planTitle || '执行中...',
+        description: planDesc || undefined,
+        steps,
+        completedSteps,
+        totalSteps,
+        resultText,
+        agentNameMap: planAgentNameMap,
       };
+    };
 
-      const updatePlanCard = (streaming: boolean, mode: 'executing' | 'complete' = 'executing', completedSteps?: number, totalSteps?: number, resultText?: string) => {
-        const planData = buildExecPlanData(mode, completedSteps, totalSteps, resultText);
-        const segments: MessageSegment[] = [{ type: 'plan', planData }];
-        toolCalls.forEach((_tc, idx) => { segments.push({ type: 'tool', toolIndex: idx }); });
-        const content = resultText || '';
-        if (resultText) segments.push({ type: 'text', content });
-        appendAssistant(content, streaming, [...toolCalls], [...segments]);
-      };
+    const updatePlanCard = (streaming: boolean, mode: 'executing' | 'complete' = 'executing', completedSteps?: number, totalSteps?: number, resultText?: string) => {
+      const planData = buildExecPlanData(mode, completedSteps, totalSteps, resultText);
+      const segments: MessageSegment[] = [{ type: 'plan', planData }];
+      toolCalls.forEach((_tc, idx) => { segments.push({ type: 'tool', toolIndex: idx }); });
+      const content = resultText || '';
+      if (resultText) segments.push({ type: 'text', content });
+      appendAssistant(content, streaming, [...toolCalls], [...segments]);
+    };
 
-      updatePlanCard(true);
+    updatePlanCard(true);
 
-      while (true) {
-        const { done, value } = await execReader.read();
-        if (done) break;
-        execBuf += decoder.decode(value, { stream: true });
-        const blocks = execBuf.split(/\n\n+/);
-        execBuf = blocks.pop() || '';
-        for (const block of blocks) {
-          for (const line of block.split(/\r?\n/)) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
-            const data = trimmed.slice(5).trim();
-            if (data === '[DONE]') break;
-            try {
-              const evt = JSON.parse(data);
-              const stepId = evt.step_id as string | undefined;
-              switch (evt.type) {
-                case 'plan_step_start':
-                  if (stepId) stepResults[stepId] = { status: 'running', summary: '', text: '', title: evt.title || '', order: evt.step_order || 0, step_id: stepId };
+    while (true) {
+      const { done, value } = await execReader.read();
+      if (done) break;
+      execBuf += decoder.decode(value, { stream: true });
+      const blocks = execBuf.split(/\n\n+/);
+      execBuf = blocks.pop() || '';
+      for (const block of blocks) {
+        for (const line of block.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') break;
+          try {
+            const evt = JSON.parse(data);
+            const stepId = evt.step_id as string | undefined;
+            switch (evt.type) {
+              case 'plan_step_start':
+                if (stepId) stepResults[stepId] = { status: 'running', summary: '', text: '', title: evt.title || '', order: evt.step_order || 0, step_id: stepId };
+                updatePlanCard(true);
+                break;
+              case 'plan_step_progress':
+                if (stepId && stepResults[stepId]) { stepResults[stepId].text += evt.delta || ''; updatePlanCard(true); }
+                break;
+              case 'plan_step_qa':
+                // Show redo_failed status temporarily when QA returns REDO_STEP
+                if (stepId && stepResults[stepId] && evt.verdict === 'REDO_STEP') {
+                  stepResults[stepId].status = 'redo_failed';
                   updatePlanCard(true);
-                  break;
-                case 'plan_step_progress':
-                  if (stepId && stepResults[stepId]) { stepResults[stepId].text += evt.delta || ''; updatePlanCard(true); }
-                  break;
-                case 'tool_call': {
-                  if (stepId) {
-                    let tcDisplayName = typeof evt.tool_display_name === 'string' && evt.tool_display_name.trim()
-                      ? evt.tool_display_name.trim()
-                      : undefined;
-                    if (tcDisplayName && typeof evt.subagent_name === 'string' && evt.subagent_name.trim()) {
-                      tcDisplayName += `：${(evt.subagent_name as string).trim()}`;
-                    }
-                    toolCalls.push({ id: evt.tool_id, name: evt.tool_name || 'unknown', displayName: tcDisplayName, input: evt.tool_args, status: 'running', timestamp: Date.now() });
-                    updatePlanCard(true);
-                  }
-                  break;
                 }
-                case 'tool_result': {
-                  if (evt.tool_id) {
-                    const idx = toolCalls.findIndex(t => t.id === evt.tool_id);
-                    if (idx >= 0) {
-                      let resultDisplayName: string | undefined;
-                      if (typeof evt.subagent_name === 'string' && evt.subagent_name.trim()) {
-                        resultDisplayName = `调用子智能体：${(evt.subagent_name as string).trim()}`;
-                      }
-                      toolCalls[idx] = { ...toolCalls[idx], output: evt.result, status: 'success', ...(resultDisplayName ? { displayName: resultDisplayName } : {}) };
-                      updatePlanCard(true);
-                    }
+                break;
+              case 'plan_replan': {
+                // Local replan: mark old steps as replaced, new steps as replan_new
+                const replacedFrom: number = evt.replaced_from_order || 0;
+                const newStepList: Array<Record<string, unknown>> = evt.new_steps || [];
+                // Mark steps from replacedFrom onward as replaced
+                for (const r of Object.values(stepResults)) {
+                  if (r.order >= replacedFrom && !r.replaced) {
+                    r.replaced = true;
+                    r.status = 'skipped';
                   }
-                  break;
                 }
-                case 'plan_step_complete':
-                  if (stepId && stepResults[stepId]) {
-                    stepResults[stepId].status = evt.status || 'success';
-                    stepResults[stepId].summary = evt.summary || '';
-                    stepResults[stepId].text = '';
-                    updatePlanCard(true);
+                // Register incoming new steps
+                for (const ns of newStepList) {
+                  const nsId = String(ns.step_id || '');
+                  if (nsId) {
+                    stepResults[nsId] = {
+                      status: 'pending', summary: '', text: '',
+                      title: String(ns.title || ''), order: Number(ns.step_order || 0),
+                      step_id: nsId, is_replan_new: true,
+                      replan_reason: String(evt.reason || ''),
+                    };
                   }
-                  break;
-                case 'plan_error':
-                  if (stepId && stepResults[stepId]) { stepResults[stepId].status = 'failed'; stepResults[stepId].summary = evt.error || '执行出错'; }
-                  updatePlanCard(true);
-                  break;
-                case 'plan_complete': {
-                  planCompleted = true;
-                  updatePlanCard(false, 'complete', evt.completed_steps, evt.total_steps, evt.result_text || undefined);
-                  break;
                 }
+                // Refresh planStepDefs to include replaced + new steps
+                planStepDefs = [
+                  ...planStepDefs.filter((s: any) => (stepResults[s.step_id]?.order || s.step_order || 0) < replacedFrom),
+                  ...planStepDefs.filter((s: any) => (stepResults[s.step_id]?.order || s.step_order || 0) >= replacedFrom).map((s: any) => ({ ...s, _replaced: true })),
+                  ...newStepList,
+                ];
+                updatePlanCard(true);
+                break;
               }
-            } catch { /* skip */ }
-          }
+              case 'plan_global_reset': {
+                // Execution stream interrupted: new plan generated, show as preview for user confirmation
+                execReader.releaseLock();
+                const failureReason = String(evt.failure_reason || '执行方案无法达到预期效果');
+                const newPlanData = evt.new_plan as Record<string, unknown>;
+                const newPlanId = `plan_reset_${Date.now()}`;
+                const resetSegData = newPlanData ? buildPlanSegmentData({ ...newPlanData, plan_id: newPlanId }) : null;
+
+                const resetMsg = `在执行过程中，发现原定方案无法达到您的预期效果（${failureReason}）。为了更准确地完成任务，我重新制定了一份方案，您看是否按这个新方案继续？`;
+                if (resetSegData) {
+                  const segs: MessageSegment[] = [{ type: 'text', content: resetMsg }, { type: 'plan', planData: resetSegData }];
+                  appendAssistant(resetMsg, false, undefined, segs);
+                  setCurrentPlanId((evt.new_plan_id as string) || newPlanId);
+                } else {
+                  appendAssistant(resetMsg, false);
+                  setCurrentPlanId(null);
+                }
+                planCompleted = true; // prevent fallback update
+                return;
+              }
+              case 'tool_call': {
+                if (stepId) {
+                  let tcDisplayName = typeof evt.tool_display_name === 'string' && evt.tool_display_name.trim()
+                    ? evt.tool_display_name.trim()
+                    : undefined;
+                  if (tcDisplayName && typeof evt.subagent_name === 'string' && evt.subagent_name.trim()) {
+                    tcDisplayName += `：${(evt.subagent_name as string).trim()}`;
+                  }
+                  toolCalls.push({ id: evt.tool_id, name: evt.tool_name || 'unknown', displayName: tcDisplayName, input: evt.tool_args, status: 'running', timestamp: Date.now() });
+                  updatePlanCard(true);
+                }
+                break;
+              }
+              case 'tool_result': {
+                if (evt.tool_id) {
+                  const idx = toolCalls.findIndex(t => t.id === evt.tool_id);
+                  if (idx >= 0) {
+                    let resultDisplayName: string | undefined;
+                    if (typeof evt.subagent_name === 'string' && evt.subagent_name.trim()) {
+                      resultDisplayName = `调用子智能体：${(evt.subagent_name as string).trim()}`;
+                    }
+                    toolCalls[idx] = { ...toolCalls[idx], output: evt.result, status: 'success', ...(resultDisplayName ? { displayName: resultDisplayName } : {}) };
+                    updatePlanCard(true);
+                  }
+                }
+                break;
+              }
+              case 'plan_step_complete':
+                if (stepId && stepResults[stepId]) {
+                  stepResults[stepId].status = evt.status || 'success';
+                  stepResults[stepId].summary = evt.summary || '';
+                  stepResults[stepId].text = '';
+                  updatePlanCard(true);
+                }
+                break;
+              case 'plan_error':
+                if (stepId && stepResults[stepId]) { stepResults[stepId].status = 'failed'; stepResults[stepId].summary = evt.error || '执行出错'; }
+                updatePlanCard(true);
+                break;
+              case 'plan_complete': {
+                planCompleted = true;
+                updatePlanCard(false, 'complete', evt.completed_steps, evt.total_steps, evt.result_text || undefined);
+                break;
+              }
+            }
+          } catch { /* skip */ }
         }
       }
-      execReader.releaseLock();
-      toolCalls.forEach(tc => { if (tc.status === 'running') tc.status = 'success'; });
-      if (!planCompleted) updatePlanCard(false);
-      setCurrentPlanId(null);
-      addBackendSessionId(currentChatId);
-      addLoadedMsgId(currentChatId);
-      setTimeout(() => generateSummary(currentChatId), 500);
+    }
+    execReader.releaseLock();
+    toolCalls.forEach(tc => { if (tc.status === 'running') tc.status = 'success'; });
+    if (!planCompleted) updatePlanCard(false);
+    setCurrentPlanId(null);
+    addBackendSessionId(currentChatId);
+    addLoadedMsgId(currentChatId);
+    setTimeout(() => generateSummary(currentChatId), 500);
+  };
+
+  try {
+    if (hasPendingPlan && currentPlanId) {
+      // Route through intent classification: send user reply to /generate with previous_plan_id
+      appendAssistant('正在识别意图...', true);
+      const intentResp = await generatePlanStream(msg, 'qwen', abortController.signal, enabledMcpIds, enabledSkillIds, enabledKbIds, currentChatId, historyMessages, attachments, undefined, currentPlanId, msg);
+      if (!intentResp.ok) throw new Error(`意图识别请求失败: ${intentResp.status}`);
+
+      const intentEvents = await readPlanSse(intentResp);
+      const confirmEvt = intentEvents.find(e => e.type === 'plan_confirm');
+      const newPlanEvt = intentEvents.find(e => e.type === 'plan_generated');
+      const errorEvt = intentEvents.find(e => e.type === 'plan_error');
+
+      if (errorEvt) { appendAssistant(`操作失败：${errorEvt.error}`, false); return; }
+
+      if (confirmEvt) {
+        // User confirmed: execute the current plan
+        await runExecutePlan(currentPlanId);
+      } else if (newPlanEvt) {
+        // User requested replan: show new plan for confirmation
+        setCurrentPlanId(newPlanEvt.plan_id as string);
+        const planSegData = buildPlanSegmentData(newPlanEvt);
+        const planSegments: MessageSegment[] = [{ type: 'plan', planData: planSegData }];
+        appendAssistant('', false, undefined, planSegments);
+      } else {
+        appendAssistant('未能识别您的意图，请明确回复"确认执行"或"重新计划+建议"。', false);
+      }
 
     } else {
       // Phase 1: Generate plan

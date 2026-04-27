@@ -46,6 +46,10 @@ class GeneratePlanRequest(BaseModel):
     chat_id: Optional[str] = None
     history_messages: Optional[List[HistoryMessage]] = None
     attachments: Optional[List[PlanAttachment]] = None
+    # When user responds to a shown plan:
+    # previous_plan_id + user_reply trigger intent classification before re-planning.
+    previous_plan_id: Optional[str] = None
+    user_reply: Optional[str] = None
 
 
 class UpdatePlanRequest(BaseModel):
@@ -172,6 +176,8 @@ async def generate_plan(
                 enabled_agent_ids=req.enabled_agent_ids,
                 session_messages=session_messages,
                 uploaded_files=uploaded_files,
+                previous_plan_id=req.previous_plan_id,
+                user_reply=req.user_reply,
             ):
                 # Capture plan info for DB persistence
                 if event.get("type") == "plan_generated":
@@ -321,8 +327,8 @@ async def execute_plan(
     plan = svc.get_plan(plan_id, user.user_id)
     if not plan:
         raise HTTPException(status_code=404, detail="计划不存在")
-    if plan.status != "approved":
-        raise HTTPException(status_code=400, detail=f"计划状态为 '{plan.status}'，需要先审批")
+    if plan.get("status") != "approved":
+        raise HTTPException(status_code=400, detail=f"计划状态为 '{plan.get('status')}'，需要先审批")
 
     # Ensure chat session and save "确认执行" user message
     db_chat_id = _ensure_plan_session(db, req.chat_id, user.user_id)
@@ -510,8 +516,8 @@ async def cancel_plan(
     plan = svc.get_plan(plan_id, user.user_id)
     if not plan:
         raise HTTPException(status_code=404, detail="计划不存在")
-    if plan.status not in ("running", "approved", "draft"):
-        raise HTTPException(status_code=400, detail=f"计划状态为 '{plan.status}'，无法取消")
+    if plan.get("status") not in ("running", "approved", "draft"):
+        raise HTTPException(status_code=400, detail=f"计划状态为 '{plan.get('status')}'，无法取消")
 
     svc.update_plan(plan_id, status="cancelled")
     return success_response(message="已取消")

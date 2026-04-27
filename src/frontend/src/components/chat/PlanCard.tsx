@@ -13,14 +13,19 @@ import {
 export interface PlanStepData {
   step_order: number;
   title: string;
+  brief_description?: string;  // one-line summary shown in collapsed view
   description?: string;
   expected_tools?: string[];
   expected_skills?: string[];
   expected_agents?: string[];
   acceptance_criteria?: string;
-  status?: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+  status?: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'redo_failed';
   summary?: string;
   text?: string;          // live progress text during execution
+  // REPLAN display fields
+  replaced?: boolean;     // step was replaced by replan (show strikethrough)
+  is_replan_new?: boolean; // this is a newly inserted replan step
+  replan_reason?: string; // why this step was replanned
 }
 
 export interface PlanCardProps {
@@ -52,6 +57,7 @@ function StepStatusIcon({ status }: { status?: string }) {
     case 'success':
       return <CheckCircleFilled className="jx-plan-stepIcon jx-plan-stepIcon--success" />;
     case 'failed':
+    case 'redo_failed':
       return <CloseCircleFilled className="jx-plan-stepIcon jx-plan-stepIcon--error" />;
     case 'running':
       return <LoadingOutlined className="jx-plan-stepIcon jx-plan-stepIcon--running" spin />;
@@ -66,19 +72,52 @@ function StepStatusIcon({ status }: { status?: string }) {
 function PlanStepRow({ step, index, mode, agentNameMap, defaultExpanded }: { step: PlanStepData; index: number; mode: string; agentNameMap?: Record<string, string>; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(!!defaultExpanded);
   const hasDetails = !!(step.description || step.expected_tools?.length || step.expected_skills?.length || step.expected_agents?.length || step.acceptance_criteria);
-  const showExpand = mode === 'preview' && hasDetails;
+  const showExpand = hasDetails;
   const isActive = step.status === 'running';
+  const isRedoFailed = step.status === 'redo_failed';
+  const isReplaced = step.replaced;
+  const isReplanNew = step.is_replan_new;
+
+  const stepCls = [
+    'jx-plan-step',
+    isActive ? 'jx-plan-step--active' : '',
+    step.status === 'success' ? 'jx-plan-step--done' : '',
+    isRedoFailed ? 'jx-plan-step--redo-failed' : '',
+    isReplaced ? 'jx-plan-step--replaced' : '',
+    isReplanNew ? 'jx-plan-step--replan-new' : '',
+  ].filter(Boolean).join(' ');
 
   return (
-    <div className={`jx-plan-step ${isActive ? 'jx-plan-step--active' : ''} ${step.status === 'success' ? 'jx-plan-step--done' : ''}`}>
-      <div className="jx-plan-stepHeader" onClick={showExpand ? () => setExpanded(!expanded) : undefined} style={showExpand ? { cursor: 'pointer' } : undefined}>
+    <div className={stepCls}>
+      {/* REPLAN: replaced step (strikethrough label) */}
+      {isReplaced && (
+        <div className="jx-plan-replanBadge jx-plan-replanBadge--replaced">已替换</div>
+      )}
+      {/* REPLAN: newly inserted step */}
+      {isReplanNew && (
+        <div className="jx-plan-replanBadge jx-plan-replanBadge--new">已自动优化</div>
+      )}
+
+      <div
+        className="jx-plan-stepHeader"
+        onClick={showExpand ? () => setExpanded(!expanded) : undefined}
+        style={showExpand ? { cursor: 'pointer' } : undefined}
+      >
         <div className="jx-plan-stepLeft">
           {mode === 'preview' ? (
             <span className="jx-plan-stepNum">{index + 1}</span>
           ) : (
             <StepStatusIcon status={step.status} />
           )}
-          <span className="jx-plan-stepTitle">{step.title}</span>
+          <div className="jx-plan-stepTitleGroup">
+            <span className={`jx-plan-stepTitle ${isReplaced ? 'jx-plan-stepTitle--struck' : ''}`}>
+              {step.title}
+            </span>
+            {/* brief_description shown below title when collapsed */}
+            {step.brief_description && !expanded && (
+              <span className="jx-plan-stepBrief">{step.brief_description}</span>
+            )}
+          </div>
         </div>
         {showExpand && (
           <span className="jx-plan-stepExpand">
@@ -87,10 +126,13 @@ function PlanStepRow({ step, index, mode, agentNameMap, defaultExpanded }: { ste
         )}
       </div>
 
-      {/* Preview mode: expandable details */}
-      {expanded && mode === 'preview' && (
+      {/* Expandable details (both preview and execution modes) */}
+      {expanded && (
         <div className="jx-plan-stepDetails">
           {step.description && <p className="jx-plan-stepDesc">{step.description}</p>}
+          {step.replan_reason && (
+            <p className="jx-plan-replanReason">优化原因：{step.replan_reason}</p>
+          )}
           {step.expected_tools && step.expected_tools.length > 0 && (
             <div className="jx-plan-stepMeta">
               <ToolOutlined className="jx-plan-metaIcon" />
@@ -128,8 +170,13 @@ function PlanStepRow({ step, index, mode, agentNameMap, defaultExpanded }: { ste
         </div>
       )}
 
+      {/* Execution mode: REDO notification */}
+      {mode !== 'preview' && isRedoFailed && (
+        <div className="jx-plan-redoHint">QA 验证未通过，正在重试...</div>
+      )}
+
       {/* Execution mode: summary or live progress */}
-      {mode !== 'preview' && step.summary && (
+      {mode !== 'preview' && step.summary && !isActive && (
         <div className="jx-plan-stepSummary">{step.summary}</div>
       )}
       {mode !== 'preview' && isActive && step.text && (
@@ -233,7 +280,7 @@ export function PlanCard({ mode, title, description, steps, completedSteps, tota
         <div className="jx-plan-footer">
           {previewFooter ?? (
             <div className="jx-plan-footerTip">
-              请回复 <strong>"确认执行"</strong> 开始按步骤执行此计划，或回复其他内容修改需求。
+              回复 <strong>"确认执行"</strong> 开始执行，或回复 <strong>"重新计划 + 您的建议"</strong> 让系统根据建议重新制定方案。
             </div>
           )}
         </div>
