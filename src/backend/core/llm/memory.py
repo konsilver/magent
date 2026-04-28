@@ -82,13 +82,16 @@ def _patch_milvus_create_col() -> None:
         def _compat_create_col(self, collection_name, vector_size, metric_type="COSINE"):
             if self.client.has_collection(collection_name):
                 logger.info(f"Collection {collection_name} already exists. Skipping creation.")
-                try:
-                    self.client.load_collection(collection_name)
-                except Exception:
-                    pass
                 desc = self.client.describe_collection(collection_name=collection_name)
                 field_names = {f.get("name") for f in desc.get("fields", [])}
                 self._has_bm25_schema = "text" in field_names and "sparse" in field_names
+                try:
+                    self.client.load_collection(collection_name)
+                except Exception as load_exc:
+                    # 旧 collection 可能缺少 sparse 字段索引，load 会报错，但 dense 搜索仍可用
+                    logger.warning(
+                        f"[MemoryService] load_collection({collection_name}) failed (non-fatal): {load_exc}"
+                    )
                 return
 
             fields = [
@@ -313,11 +316,9 @@ async def retrieve_memories(
         try:
             loop = asyncio.get_running_loop()
 
-            search_kwargs: dict = {"user_id": user_id, "limit": limit}
-
             result = await loop.run_in_executor(
                 None,
-                lambda: memory.search(query, **search_kwargs)
+                lambda: memory.search(query, filters={"user_id": user_id}, top_k=limit)
             )
             # mem0 v1.1 returns {"results": [...], "relations": [...]}
             # mem0 也可能直接返回 list
@@ -530,7 +531,7 @@ async def get_all_memories(user_id: str) -> List[dict]:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
-                lambda: memory.get_all(user_id=user_id)
+                lambda: memory.get_all(filters={"user_id": user_id})
             )
             if isinstance(result, dict):
                 return result.get("results", [])
@@ -562,26 +563,10 @@ async def get_memories_by_metadata(user_id: str, metadata_filter: Dict[str, Any]
             return []
         try:
             loop = asyncio.get_running_loop()
-            # 尝试使用 filters 参数（mem0 >= 0.1.29 支持）
-            try:
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: memory.get_all(user_id=user_id, filters=metadata_filter)
-                )
-            except TypeError:
-                # 旧版本不支持 filters，降级为全量获取后应用层过滤
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: memory.get_all(user_id=user_id)
-                )
-                items = result.get("results", []) if isinstance(result, dict) else (result or [])
-                return [
-                    m for m in items
-                    if isinstance(m, dict) and all(
-                        m.get("metadata", {}).get(k) == v
-                        for k, v in metadata_filter.items()
-                    )
-                ]
+            result = await loop.run_in_executor(
+                None,
+                lambda: memory.get_all(filters={"user_id": user_id, **metadata_filter})
+            )
 
             if isinstance(result, dict):
                 return result.get("results", [])
