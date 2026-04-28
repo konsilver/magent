@@ -184,7 +184,11 @@ export function useStreaming(
       const currentChat = useChatStore.getState().store.chats[currentChatId];
       const agentId = (currentChat as any)?.agentId || undefined;
       const codeExec = !!(currentChat as any)?.codeExecChat;
-      const isPlanChat = !!(currentChat as any)?.planChat || useChatStore.getState().planMode;
+      // Reuse the plan-mode flag captured at the top of send() — avoids a race
+      // where useChatInit async-loads messages and sets planMode=true between the
+      // early-return check and this point, which would send plan_chat:true to
+      // /v1/chats/stream while also bypassing sendPlanMode().
+      const isPlanChat = _isPlanChat;
 
       const r = await authFetch(`${effectiveApiUrl}/v1/chats/stream`, {
         method: 'POST',

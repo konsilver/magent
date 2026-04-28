@@ -511,6 +511,10 @@ export function useChatInit() {
           updateStore(prev => {
             const c = prev.chats[chatId];
             if (!c) return prev;
+            // Don't overwrite messages while a stream is actively writing to this chat.
+            // The streaming handler already owns message state during that window;
+            // overwriting it would destroy the live plan card or partial response.
+            if (useChatStore.getState().sendingChatIds.has(chatId)) return prev;
             return {
               ...prev,
               chats: {
