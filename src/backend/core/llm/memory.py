@@ -8,6 +8,7 @@
 - 去重/更新决策（LLM）
 
 本文件只做配置组装 + 异步封装，不实现任何记忆管理逻辑。
+额外提供 Neo4j 直接写入/查询接口，用于精确控制 PlanSkeleton 图结构。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import logging
 import math
 import threading
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.config.settings import settings
 
@@ -408,9 +409,15 @@ def build_long_term_memory(user_id: str):
         return None
 
 
-async def save_conversation(user_id: str, user_message: str, assistant_message: str) -> None:
-    """
-    调用 mem0.Memory.add()，后台保存对话记忆。
+async def save_conversation(
+    user_id: str,
+    user_message: str,
+    assistant_message: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """调用 mem0.Memory.add()，后台保存对话记忆。
+
+    metadata 会原样传给 mem0，可用于后续精确过滤（如 {"type": "user_profile"}）。
     本函数应通过 asyncio.create_task() 调用，不阻塞主流程。
     """
     if not MEM0_ENABLED or not user_id:
@@ -426,9 +433,12 @@ async def save_conversation(user_id: str, user_message: str, assistant_message: 
         try:
             loop = asyncio.get_running_loop()
             logger.info("[MemoryService] 开始保存记忆, user_id=%s, msg_len=%d", user_id, len(user_message))
+            add_kwargs: dict = {"user_id": user_id}
+            if metadata:
+                add_kwargs["metadata"] = metadata
             result = await loop.run_in_executor(
                 None,
-                lambda: memory.add(messages, user_id=user_id)
+                lambda: memory.add(messages, **add_kwargs)
             )
             logger.info("[MemoryService] 用户 %s 的记忆已保存, result=%s", user_id, result)
             return
@@ -466,6 +476,57 @@ async def get_all_memories(user_id: str) -> List[dict]:
                 _reset_memory()
                 continue
             logger.warning("[MemoryService] 获取记忆列表失败: %s", exc)
+            return []
+    return []
+
+
+async def get_memories_by_metadata(user_id: str, metadata_filter: Dict[str, Any]) -> List[dict]:
+    """获取指定 metadata 标签的记忆条目（精确过滤）。
+
+    mem0 v1.1 的 get_all() 支持 filters 参数（Milvus scalar filter）。
+    如不支持则降级为 get_all() + 应用层过滤。
+    """
+    if not MEM0_ENABLED or not user_id:
+        return []
+
+    for attempt in range(2):
+        memory = _get_memory()
+        if memory is None:
+            return []
+        try:
+            loop = asyncio.get_running_loop()
+            # 尝试使用 filters 参数（mem0 >= 0.1.29 支持）
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: memory.get_all(user_id=user_id, filters=metadata_filter)
+                )
+            except TypeError:
+                # 旧版本不支持 filters，降级为全量获取后应用层过滤
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: memory.get_all(user_id=user_id)
+                )
+                items = result.get("results", []) if isinstance(result, dict) else (result or [])
+                return [
+                    m for m in items
+                    if isinstance(m, dict) and all(
+                        m.get("metadata", {}).get(k) == v
+                        for k, v in metadata_filter.items()
+                    )
+                ]
+
+            if isinstance(result, dict):
+                return result.get("results", [])
+            if isinstance(result, list):
+                return result
+            return []
+        except Exception as exc:
+            if attempt == 0 and _is_connection_error(exc):
+                logger.warning("[MemoryService] Milvus 连接断开，正在重置并重试: %s", exc)
+                _reset_memory()
+                continue
+            logger.warning("[MemoryService] metadata 过滤查询失败: %s", exc)
             return []
     return []
 
@@ -510,3 +571,201 @@ async def delete_all_memories(user_id: str) -> bool:
             logger.warning("[MemoryService] 批量删除失败: %s", exc)
             return False
     return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Neo4j 直接写入/查询 — 用于精确控制 PlanSkeleton 图结构
+#
+# 图结构：
+#   PlanSkeleton(plan_id) --HAS--> StepNode(step_id)
+#   StepNode(step_id_n)   --NEXT--> StepNode(step_id_n+1)
+#   PlanSkeleton(plan_id) --REFERS_TO--> Suggestion(plan_id)
+#
+# 这些函数不依赖 mem0，直接操作 Neo4j，失败时静默降级。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_neo4j_driver = None
+_neo4j_driver_lock = threading.Lock()
+
+
+def _get_neo4j_driver():
+    """懒初始化 Neo4j driver 单例，失败时返回 None。"""
+    global _neo4j_driver
+    if not MEM0_GRAPH_ENABLED:
+        return None
+    if _neo4j_driver is not None:
+        return _neo4j_driver
+    with _neo4j_driver_lock:
+        if _neo4j_driver is not None:
+            return _neo4j_driver
+        try:
+            from neo4j import GraphDatabase
+            _neo4j_driver = GraphDatabase.driver(
+                settings.memory.neo4j_url,
+                auth=(settings.memory.neo4j_username, settings.memory.neo4j_password),
+            )
+            logger.info("[Neo4j] driver initialized: %s", settings.memory.neo4j_url)
+            return _neo4j_driver
+        except Exception as exc:
+            logger.warning("[Neo4j] driver init failed (Graph features disabled): %s", exc)
+            return None
+
+
+async def write_plan_graph(
+    user_id: str,
+    plan_id: str,
+    skeleton_description: str,
+    task_type: str,
+    status: str,
+    abstract_steps: List[Dict[str, Any]],
+    plan_suggestion: str = "",
+) -> None:
+    """将计划骨架写入 Neo4j 图：PlanSkeleton --HAS--> StepNode 链 + 可选 Suggestion。
+
+    - 成功计划（status='success'）：只写骨架和步骤链
+    - 失败计划（status='replan'）：还写 --REFERS_TO--> Suggestion 节点
+    失败时静默降级。
+    """
+    driver = _get_neo4j_driver()
+    if driver is None:
+        return
+
+    def _write(tx, pid, skeleton_desc, task_type, status, steps, suggestion):
+        now = datetime.utcnow().isoformat()
+        # MERGE PlanSkeleton node
+        tx.run(
+            """
+            MERGE (ps:PlanSkeleton {plan_id: $pid, user_id: $user_id})
+            SET ps.description = $desc,
+                ps.task_type   = $task_type,
+                ps.status      = $status,
+                ps.updated_at  = $now
+            """,
+            pid=pid, user_id=user_id, desc=skeleton_desc,
+            task_type=task_type, status=status, now=now,
+        )
+        # MERGE each StepNode and HAS relation
+        prev_sid = None
+        for i, step in enumerate(steps):
+            sid = str(step.get("step_id", f"step_{i+1}"))
+            title = step.get("abstract_title", f"步骤{i+1}")
+            tx.run(
+                """
+                MERGE (sn:StepNode {step_id: $sid, plan_id: $pid})
+                SET sn.title = $title, sn.order = $order, sn.updated_at = $now
+                WITH sn
+                MATCH (ps:PlanSkeleton {plan_id: $pid, user_id: $user_id})
+                MERGE (ps)-[:HAS]->(sn)
+                """,
+                sid=sid, pid=pid, user_id=user_id, title=title, order=i + 1, now=now,
+            )
+            if prev_sid is not None:
+                tx.run(
+                    """
+                    MATCH (a:StepNode {step_id: $a_sid, plan_id: $pid})
+                    MATCH (b:StepNode {step_id: $b_sid, plan_id: $pid})
+                    MERGE (a)-[:NEXT]->(b)
+                    """,
+                    a_sid=prev_sid, b_sid=sid, pid=pid,
+                )
+            prev_sid = sid
+        # REFERS_TO Suggestion (replan only)
+        if suggestion:
+            tx.run(
+                """
+                MERGE (sg:Suggestion {plan_id: $pid, user_id: $user_id})
+                SET sg.text = $text, sg.updated_at = $now
+                WITH sg
+                MATCH (ps:PlanSkeleton {plan_id: $pid, user_id: $user_id})
+                MERGE (ps)-[:REFERS_TO]->(sg)
+                """,
+                pid=pid, user_id=user_id, text=suggestion[:500], now=now,
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: driver.execute_query(
+                # Use a session-level transaction via execute_query wrapper
+                "RETURN 1",  # dummy — actual work done in _write below
+            ) if False else _write_session(driver, _write, plan_id, skeleton_description,
+                                           task_type, status, abstract_steps, plan_suggestion),
+        )
+        logger.info("[Neo4j] plan graph written: plan_id=%s, steps=%d", plan_id, len(abstract_steps))
+    except Exception as exc:
+        logger.warning("[Neo4j] write_plan_graph failed (non-critical): %s", exc)
+
+
+def _write_session(driver, write_fn, plan_id, skeleton_desc, task_type, status, steps, suggestion):
+    """Run write_fn inside a Neo4j write transaction."""
+    with driver.session() as session:
+        session.execute_write(
+            write_fn, plan_id, skeleton_desc, task_type, status, steps, suggestion
+        )
+
+
+async def query_plan_graph(
+    user_id: str,
+    plan_ids: List[str],
+) -> List[Dict[str, Any]]:
+    """根据 plan_id 列表查询 Neo4j 中的完整骨架信息（StepNode 链 + Suggestion）。
+
+    返回每个 plan 的：
+    - plan_id, description, task_type, status
+    - steps: [{step_id, title, order}]
+    - suggestion: str（仅 replan 计划有）
+
+    失败时返回空列表。
+    """
+    driver = _get_neo4j_driver()
+    if driver is None or not plan_ids:
+        return []
+
+    def _query(tx):
+        results = []
+        for pid in plan_ids:
+            # Skeleton info
+            rec = tx.run(
+                """
+                MATCH (ps:PlanSkeleton {plan_id: $pid, user_id: $user_id})
+                OPTIONAL MATCH (ps)-[:HAS]->(sn:StepNode)
+                OPTIONAL MATCH (ps)-[:REFERS_TO]->(sg:Suggestion)
+                RETURN ps.description AS desc, ps.task_type AS task_type, ps.status AS status,
+                       collect({step_id: sn.step_id, title: sn.title, order: sn.order}) AS steps,
+                       sg.text AS suggestion
+                """,
+                pid=pid, user_id=user_id,
+            ).single()
+            if rec is None:
+                continue
+            steps_raw = rec["steps"] or []
+            steps_sorted = sorted(
+                [s for s in steps_raw if s.get("step_id")],
+                key=lambda x: x.get("order") or 0,
+            )
+            results.append({
+                "plan_id": pid,
+                "description": rec["desc"] or "",
+                "task_type": rec["task_type"] or "",
+                "status": rec["status"] or "",
+                "steps": steps_sorted,
+                "suggestion": rec["suggestion"] or "",
+            })
+        return results
+
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: _query_session(driver, _query),
+        )
+    except Exception as exc:
+        logger.warning("[Neo4j] query_plan_graph failed (non-critical): %s", exc)
+        return []
+
+
+def _query_session(driver, query_fn):
+    """Run query_fn inside a Neo4j read transaction."""
+    with driver.session() as session:
+        return session.execute_read(query_fn)

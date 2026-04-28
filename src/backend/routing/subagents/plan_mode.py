@@ -520,22 +520,29 @@ def _mem0_enabled() -> bool:
 
 
 async def _retrieve_plan_memory(user_id: str, task_description: str) -> Dict[str, Any]:
-    """Search KV memory for similar historical plans and failure patterns.
+    """KV 检索相似历史任务，再用 plan_id 到 Neo4j Graph 查完整骨架。
 
-    Planner reads this before making a plan; warmup agent reuses the result.
-    Returns {"similar_tasks": [...], "failure_patterns": [...]}.
+    流程：
+    1. KV (Milvus) 根据任务描述检索 top-8 相似计划，从中提取 plan_id
+    2. 按 plan_id 查 Neo4j 拿到完整的骨架结构（步骤链 + 优化建议）
+    3. 返回 {"similar_tasks": [...], "failure_patterns": [...], "graph_plans": [...]}
+
+    Planner 和 warmup agent 都使用此结果；warmup 直接复用，不再重查。
     """
     if not _mem0_enabled() or not user_id:
-        return {"similar_tasks": [], "failure_patterns": []}
+        return {"similar_tasks": [], "failure_patterns": [], "graph_plans": []}
     try:
         from core.llm.memory import retrieve_memories
-        # Retrieve top-8 as per read.md spec (Plan module, top k=8)
+        # Step 1: KV 检索 top-8
         raw = await retrieve_memories(user_id, task_description, limit=8, min_score=0.4)
         if not raw:
-            return {"similar_tasks": [], "failure_patterns": []}
+            return {"similar_tasks": [], "failure_patterns": [], "graph_plans": []}
 
         similar_tasks: List[str] = []
         failure_patterns: List[str] = []
+        plan_ids_from_kv: List[str] = []
+
+        import re as _re
         for line in raw.splitlines():
             line = line.strip()
             if not line or line.startswith("#") or line.startswith("##"):
@@ -543,15 +550,33 @@ async def _retrieve_plan_memory(user_id: str, task_description: str) -> Dict[str
             text = line.lstrip("- ").strip()
             if not text:
                 continue
-            if "[失败" in text or "fail" in text.lower() or "失败模式" in text:
+            # 从 KV 文本中提取 plan_id（格式：plan_id=xxxxxxxx）
+            _m = _re.search(r"plan_id=([a-f0-9]{8,16})", text)
+            if _m:
+                plan_ids_from_kv.append(_m.group(1))
+            if "replan" in text.lower() or "失败" in text or "失败模式" in text:
                 failure_patterns.append(text)
             else:
                 similar_tasks.append(text)
 
-        return {"similar_tasks": similar_tasks[:8], "failure_patterns": failure_patterns[:4]}
+        # Step 2: Graph 查询（只在 Graph 启用时，且有 plan_id）
+        graph_plans: List[Dict] = []
+        if plan_ids_from_kv:
+            try:
+                from core.llm.memory import MEM0_GRAPH_ENABLED, query_plan_graph
+                if MEM0_GRAPH_ENABLED:
+                    graph_plans = await query_plan_graph(user_id, plan_ids_from_kv[:8])
+            except Exception as g_exc:
+                logger.debug("[Memory] graph plan query failed (non-critical): %s", g_exc)
+
+        return {
+            "similar_tasks": similar_tasks[:8],
+            "failure_patterns": failure_patterns[:4],
+            "graph_plans": graph_plans,
+        }
     except Exception as exc:
         logger.debug("[Memory] plan memory retrieval failed (non-critical): %s", exc)
-        return {"similar_tasks": [], "failure_patterns": []}
+        return {"similar_tasks": [], "failure_patterns": [], "graph_plans": []}
 
 
 async def _retrieve_step_memory(user_id: str, step_description: str) -> Dict[str, Any]:
@@ -729,53 +754,23 @@ def _save_task_memory_background(
             logger.info("[Memory] plan KV memory saved for user=%s, plan_id=%s, status=%s",
                         user_id, pid, status_str)
 
-            # ── Step 3: Graph storage ────────────────────────────────────────
-            # Relation schema:
-            #   PlanSkeleton(pid) --has--> StepNode(sid)      (steps belong to skeleton)
-            #   StepNode(sid_n)   --next--> StepNode(sid_n+1) (execution order)
-            #   PlanSkeleton(pid) --refers_to--> Suggestion   (replan only)
-            #
-            # We encode this as natural-language conversation pairs so that
-            # mem0's graph LLM can extract the entities and relations.
+            # ── Step 3: Graph storage (direct Neo4j write) ───────────────────
+            # Precise schema:
+            #   PlanSkeleton(plan_id) --HAS--> StepNode (order by index)
+            #   StepNode_n            --NEXT--> StepNode_n+1
+            #   PlanSkeleton(plan_id) --REFERS_TO--> Suggestion (replan only)
             if MEM0_GRAPH_ENABLED and pid:
-                # Build step-node lines
-                step_lines = []
-                for i, s in enumerate(abstract_steps):
-                    sid = str(s.get("step_id", f"step_{i+1}"))[:12]
-                    title = s.get("abstract_title", f"步骤{i+1}")
-                    step_lines.append(f"节点 {sid}：{title}")
-
-                # Dependency chain (next relations)
-                dep_lines = []
-                for i in range(len(abstract_steps) - 1):
-                    s1 = str(abstract_steps[i].get("step_id", f"step_{i+1}"))[:12]
-                    s2 = str(abstract_steps[i + 1].get("step_id", f"step_{i+2}"))[:12]
-                    dep_lines.append(f"节点 {s1} 执行后紧接节点 {s2}")
-
-                graph_user_msg = (
-                    f"计划骨架 {pid} 属于任务类型[{task_type}]，分解策略：{skeleton_desc}。\n"
-                    f"包含以下抽象步骤节点：\n" + "\n".join(step_lines)
-                    + ("\n步骤执行顺序：\n" + "\n".join(dep_lines) if dep_lines else "")
+                from core.llm.memory import write_plan_graph
+                suggestion_for_graph = (plan_suggestion or failure_reason or "") if not success else plan_suggestion
+                await write_plan_graph(
+                    user_id=user_id,
+                    plan_id=pid,
+                    skeleton_description=skeleton_desc,
+                    task_type=task_type,
+                    status=status_str,
+                    abstract_steps=abstract_steps,
+                    plan_suggestion=suggestion_for_graph,
                 )
-                graph_assistant_msg = (
-                    f"计划骨架 {pid} 执行状态：{status_str}，"
-                    f"共 {len(abstract_steps)} 个步骤节点。"
-                )
-                await save_conversation(user_id, graph_user_msg, graph_assistant_msg)
-
-                # Write Suggestion relation only for replan
-                if not success:
-                    suggestion_text = plan_suggestion or failure_reason or ""
-                    if suggestion_text:
-                        sugg_user_msg = (
-                            f"计划骨架 {pid} 参考优化建议：{suggestion_text[:200]}"
-                        )
-                        sugg_assistant_msg = (
-                            f"计划骨架 {pid} 在重新规划时应参考上述建议。"
-                        )
-                        await save_conversation(user_id, sugg_user_msg, sugg_assistant_msg)
-
-                logger.info("[Memory] plan Graph memory saved for plan_id=%s", pid)
 
         except Exception as exc:
             logger.debug("[Memory] plan memory save failed (non-critical): %s", exc)
@@ -850,9 +845,11 @@ def _save_user_profile_background(user_id: str, profile_update: Dict, model_name
 
     mem = profile_update.get("mem") or ""
 
+    _USER_PROFILE_METADATA = {"type": "user_profile"}
+
     async def _save() -> None:
         try:
-            from core.llm.memory import save_conversation, get_all_memories, delete_memory
+            from core.llm.memory import save_conversation, get_memories_by_metadata, delete_memory
 
             # Step 1: LLM merge urgent + mem into a single facts list
             merge_prompt = _USER_PROFILE_MERGE_PROMPT.format(
@@ -866,26 +863,21 @@ def _save_user_profile_background(user_id: str, profile_update: Dict, model_name
             if not facts:
                 facts = [urgent]
 
-            # Step 2: Delete old user-profile KV entries so we don't accumulate stale data.
-            # We only delete entries whose content looks like a user-profile fact (heuristic:
-            # entries added by this function contain "用户特征" or "用户即时需求" or
-            # are short single-fact strings).  We do a full get_all and filter.
+            # Step 2: 精确删除旧的 user_profile 条目（按 metadata type 过滤，无误删风险）
             try:
-                all_entries = await get_all_memories(user_id)
-                for entry in all_entries:
-                    text = (entry.get("memory") or "").strip()
-                    if "用户特征" in text or "用户即时需求" in text:
-                        mid = entry.get("id") or entry.get("memory_id")
-                        if mid:
-                            await delete_memory(mid)
+                old_entries = await get_memories_by_metadata(user_id, _USER_PROFILE_METADATA)
+                for entry in old_entries:
+                    mid = entry.get("id") or entry.get("memory_id")
+                    if mid:
+                        await delete_memory(mid)
             except Exception as del_exc:
                 logger.debug("[Memory] user profile delete old failed (non-critical): %s", del_exc)
 
-            # Step 3: Write merged facts as a conversation pair
+            # Step 3: 写入合并后的用户特征，带 metadata 标签方便下次精确删除
             facts_text = "\n".join(f"- {f}" for f in facts)
             user_msg = "用户特征更新"
             assistant_msg = f"用户特征（合并后）：\n{facts_text}"
-            await save_conversation(user_id, user_msg, assistant_msg)
+            await save_conversation(user_id, user_msg, assistant_msg, metadata=_USER_PROFILE_METADATA)
             logger.info("[Memory] user profile merged & saved for user=%s, facts=%d", user_id, len(facts))
         except Exception as exc:
             logger.debug("[Memory] user profile save failed (non-critical): %s", exc)
@@ -1098,6 +1090,23 @@ async def _run_planner(
     for fp in retrieved_memory.get("failure_patterns", []):
         if fp:
             memory_lines.append(f"- [失败模式] {fp}")
+
+    # Append Graph-based plan skeletons (step chains + suggestions from Neo4j)
+    graph_plans = retrieved_memory.get("graph_plans", [])
+    if graph_plans:
+        memory_lines.append("\n### 历史计划骨架（来自 Graph，含步骤依赖链）")
+        for gp in graph_plans[:5]:
+            pid = gp.get("plan_id", "?")
+            desc = gp.get("description", "")
+            status = gp.get("status", "")
+            steps = gp.get("steps", [])
+            suggestion = gp.get("suggestion", "")
+            step_chain = " → ".join(s.get("title", "") for s in steps) or "（无步骤）"
+            memory_lines.append(f"- [plan_id={pid}, {status}] {desc}")
+            memory_lines.append(f"  步骤链: {step_chain}")
+            if suggestion:
+                memory_lines.append(f"  优化建议: {suggestion[:150]}")
+
     memory_context = "\n".join(memory_lines) if memory_lines else "（暂无历史记忆）"
 
     user_context = json.dumps(board.get("user", {}), ensure_ascii=False)
@@ -1308,19 +1317,13 @@ _QA_FINAL_PROMPT = """你是 QA Agent，对整个计划的执行结果进行最�
 ## 最终输出
 {final_output}
 
-根据 success_criteria 对最终结果进行检查：
-- rule_match / schema_validation 类为硬约束，违反则判定失败
-- constraint_check / llm_judge 类用 LLM judge
+根据 context 中的 success_criteria 和最终结果，给出针对整个计划的优化建议。
+无论计划执行得好还是差，都要给出切实可行的改进方向。
 
-请输出以下 JSON：
+请严格输出以下 JSON：
 {{
-  "quality_score": 0.0,
-  "success": true,
-  "assessment": "简短评价",
-  "plan_suggestion": "针对整个计划的优化建议（无论成功或失败均填写，若无则填空字符串）"
-}}
-
-quality_score 在 0.0-1.0 之间。"""
+  "plan_suggestion": "针对整个计划的优化建议"
+}}"""
 
 
 async def _run_qa(
@@ -1362,7 +1365,7 @@ async def _run_qa_final(
     model_name: str,
     user_id: str,
 ) -> Dict[str, Any]:
-    """QA final check at end of plan execution."""
+    """QA final check at end of plan execution — returns only plan_suggestion."""
     prompt = _QA_FINAL_PROMPT.format(
         user_goal=board["plan"].get("user_goal", ""),
         success_criteria=json.dumps(board.get("only_qa", {}).get("success_criteria", []), ensure_ascii=False),
@@ -1372,11 +1375,11 @@ async def _run_qa_final(
     try:
         text = await _call_llm_agent(prompt, model_name, user_id, timeout=60)
         data = _parse_json_output(text)
-        if data and "quality_score" in data:
+        if data and "plan_suggestion" in data:
             return data
     except Exception as exc:
         logger.warning("[QA-final] failed: %s", exc)
-    return {"quality_score": 0.8, "success": True, "assessment": "完成"}
+    return {"plan_suggestion": ""}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2197,19 +2200,30 @@ async def astream_execute_plan(
                         step_details=[{"step_id": s.step_id, "title": s.title} for s in steps],
                     )
 
-                    replan_memory = await _retrieve_plan_memory(user_id, plan_dict["task_input"])
                     replan_ctx = {
                         "complete": True,
                         "failed_step": step.step_order,
                         "failure_reason": qa_data.get("failure_reason", []),
                     }
+                    # 全局重置：重建空 board，user_profile_agent 与 memory 检索并行
+                    # 确保新 board 的 context.user 字段有用户特征（不能省略 user_profile_agent）
+                    _reset_board = _make_context_board()
+                    replan_memory, _ = await asyncio.gather(
+                        _retrieve_plan_memory(user_id, plan_dict["task_input"]),
+                        _run_user_profile_agent(
+                            user_id=user_id,
+                            user_input=plan_dict["task_input"],
+                            model_name=_role_model("user_profile", model_name),
+                            board=_reset_board,
+                        ),
+                    )
                     new_plan_data = await _run_planner(
                         user_input=plan_dict["task_input"],
                         user_id=user_id,
                         model_name=_role_model("plan", model_name),
                         tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
                         retrieved_memory=replan_memory,
-                        board=_make_context_board(),  # fresh board for new plan
+                        board=_reset_board,
                         replan_context=replan_ctx,
                     )
 
@@ -2432,8 +2446,7 @@ async def astream_execute_plan(
             model_name=_role_model("qa", model_name),
             user_id=user_id,
         )
-        quality_score = qa_final.get("quality_score", 0.8)
-        task_success = qa_final.get("success", True) and final_status == "completed"
+        task_success = final_status == "completed"
 
         _update_stored_plan(
             plan_id,
@@ -2442,7 +2455,6 @@ async def astream_execute_plan(
             result_summary=result_text[:2000] if result_text else overall_summary,
         )
 
-        _final_failure_reason = qa_final.get("assessment", "") if not task_success else ""
         _final_plan_suggestion = qa_final.get("plan_suggestion", "")
         # Write QA plan suggestion to context board
         if _final_plan_suggestion:
@@ -2452,8 +2464,8 @@ async def astream_execute_plan(
             user_goal=board["plan"].get("user_goal", ""),
             plan_steps=[s.title for s in steps],
             success=bool(task_success),
-            quality_score=quality_score,
-            failure_reason=_final_failure_reason,
+            quality_score=1.0 if task_success else 0.5,
+            failure_reason="",
             final_solution_summary=result_text[:500],
             forced=False,
             key_constraints=[
@@ -2500,7 +2512,7 @@ async def astream_execute_plan(
             "completed_steps": completed_count,
             "total_steps": plan_dict["total_steps"],
             "usage": exec_usage,
-            "quality_score": quality_score,
+            "plan_suggestion": _final_plan_suggestion,
         }
 
         await log_writer.finish_subagent_log(

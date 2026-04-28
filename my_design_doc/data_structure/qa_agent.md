@@ -36,13 +36,7 @@ output（非全局检查）:
 }
 output（全局检查）
 {
-  "verdict": "PASS | FAIL",
-  "failure_reason": [
-      "description": "...",
-      "confidence": 0.0
-      //填入context
-      "plan_suggestion": "..."
-  ]
+  "plan_suggestion": "..."
 }
 
 //你的判断依据已经被其他agent定义，一般分下面两种：
@@ -84,12 +78,14 @@ constraints": {
 
 
 //QA在整个plan执行完后检查：
-根据context中的success_criteria对最终结果进行检查，给出优化建议
+根据context中的success_criteria对最终结果进行检查，给出优化建议，这个优化建议会伴随计划存入memory
 
 //当QA面对失败情况时：
 当你判定REDO_STEP时，先让对应subagent REDO_STEP，次数达到2次以上，触发planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
 
-当你判定REPLAN时，planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。系统重置后，你就像重新面对一个计划那样进行check（次数也重置）
+当你判定REPLAN时，planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
+
+系统重置后，你就像重新面对一个计划那样进行check（次数也重置）
 
 当你判定planner或subagent重做后，你需要给他们你判定失败的原因和优化建议，并把优化建议分别填入context的plan-steps-suggestion和plan-plan_suggestion
 
