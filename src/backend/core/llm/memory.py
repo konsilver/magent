@@ -32,6 +32,7 @@ _memory_instance = None
 _memory_lock = threading.Lock()
 _memory_init_failed = False
 _embedding_patched = False
+_milvus_patched = False
 
 
 def _patch_mem0_embedding() -> None:
@@ -42,23 +43,89 @@ def _patch_mem0_embedding() -> None:
     只 patch 一次。
     """
     global _embedding_patched
-    if _embedding_patched:
+    if not _embedding_patched:
+        try:
+            from mem0.embeddings.openai import OpenAIEmbedding as _OAIEmbed
+
+            def _patched_embed(self, text, memory_action=None):
+                text = text.replace("\n", " ")
+                return (
+                    self.client.embeddings.create(input=[text], model=self.config.model)
+                    .data[0]
+                    .embedding
+                )
+
+            _OAIEmbed.embed = _patched_embed
+            _embedding_patched = True
+        except Exception:
+            pass
+    _patch_milvus_create_col()
+
+
+def _patch_milvus_create_col() -> None:
+    """Patch mem0 MilvusDB.create_col to be compatible with older Milvus versions.
+
+    新版 mem0（>=0.1.50）在创建 collection 时会使用 BM25 FunctionType 和
+    metric_type="BM25" 的 sparse 索引，但当前 Milvus 只支持 metric_type="IP"
+    的 sparse 索引。这个 patch 替换 create_col，使用兼容旧版的方式：
+    - 不使用 BM25 Function（改用普通 SPARSE_FLOAT_VECTOR）
+    - sparse 索引 metric_type 改为 "IP"
+    - 对已存在的 collection 确保 load
+    """
+    global _milvus_patched
+    if _milvus_patched:
         return
     try:
-        from mem0.embeddings.openai import OpenAIEmbedding as _OAIEmbed
+        from mem0.vector_stores.milvus import MilvusDB
+        from pymilvus import CollectionSchema, DataType, FieldSchema
 
-        def _patched_embed(self, text, memory_action=None):
-            text = text.replace("\n", " ")
-            return (
-                self.client.embeddings.create(input=[text], model=self.config.model)
-                .data[0]
-                .embedding
+        def _compat_create_col(self, collection_name, vector_size, metric_type="COSINE"):
+            if self.client.has_collection(collection_name):
+                logger.info(f"Collection {collection_name} already exists. Skipping creation.")
+                try:
+                    self.client.load_collection(collection_name)
+                except Exception:
+                    pass
+                desc = self.client.describe_collection(collection_name=collection_name)
+                field_names = {f.get("name") for f in desc.get("fields", [])}
+                self._has_bm25_schema = "text" in field_names and "sparse" in field_names
+                return
+
+            fields = [
+                FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=512),
+                FieldSchema(name="vectors", dtype=DataType.FLOAT_VECTOR, dim=vector_size),
+                FieldSchema(name="metadata", dtype=DataType.JSON),
+                FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
+                FieldSchema(name="sparse", dtype=DataType.SPARSE_FLOAT_VECTOR),
+            ]
+            schema = CollectionSchema(fields, enable_dynamic_field=True)
+
+            index_params = self.client.prepare_index_params()
+            index_params.add_index(
+                field_name="vectors",
+                metric_type=str(metric_type),
+                index_type="AUTOINDEX",
+                index_name="vector_index",
             )
+            index_params.add_index(
+                field_name="sparse",
+                index_type="SPARSE_INVERTED_INDEX",
+                metric_type="IP",
+                index_name="sparse_index",
+            )
+            self.client.create_collection(
+                collection_name=collection_name,
+                schema=schema,
+                index_params=index_params,
+            )
+            # sparse field exists but without BM25 auto-generation
+            self._has_bm25_schema = False
 
-        _OAIEmbed.embed = _patched_embed
-        _embedding_patched = True
-    except Exception:
-        pass
+        MilvusDB.create_col = _compat_create_col
+        _milvus_patched = True
+        logger.debug("[MemoryService] MilvusDB.create_col patched for Milvus IP-sparse compatibility")
+    except Exception as exc:
+        logger.warning("[MemoryService] MilvusDB patch failed: %s", exc)
 
 
 def _build_mem0_config() -> dict:
