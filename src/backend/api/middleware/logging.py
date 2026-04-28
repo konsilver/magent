@@ -55,12 +55,21 @@ class LoggingMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
+    # Paths that should never be logged (healthcheck noise)
+    _SILENT_PATHS = frozenset({"/health", "/healthz", "/ready", "/metrics"})
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
         request = Request(scope)
+
+        # Skip logging for health/metrics endpoints to avoid log spam from polling
+        if request.url.path in self._SILENT_PATHS:
+            await self.app(scope, receive, send)
+            return
+
         trace_id = request.headers.get("X-Trace-ID") or generate_trace_id()
         user_id = getattr(request.state, "user_id", None) if hasattr(request, "state") else None
         chat_id = request.query_params.get("chat_id") or request.path_params.get("chat_id")

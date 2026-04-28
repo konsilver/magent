@@ -132,4 +132,4 @@ RUN mkdir -p /workspace /tmp/scripts && chown -R runner:runner /workspace /tmp/s
 USER runner
 EXPOSE 8900
 
-CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8900"]
+CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8900", "--no-access-log"]

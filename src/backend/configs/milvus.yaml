@@ -1,0 +1,5 @@
+# Milvus standalone configuration — suppress verbose internal polling logs
+log:
+  level: warn
+  file:
+    rootPath: ""
