@@ -5,6 +5,7 @@ import { normalizeArtifactOutput } from '../utils/fileParser';
 import { parseFileContent, parseSpaceFileContent, uploadFileToOSS } from '../utils/fileParser';
 import { inferBusinessTopic } from '../utils/history';
 import { useChatStore, useAuthStore, useCatalogStore, useFileStore, useUIStore } from '../stores';
+import { sendPlanMode } from './usePlanMode';
 
 import type { ChatItem, ChatMessage, CitationItem, MessageSegment } from '../types';
 
@@ -74,6 +75,13 @@ export function useStreaming(
       message.error('请先在设置中配置 API 地址。');
       useCatalogStore.getState().setPanel('settings');
       return;
+    }
+
+    // Plan mode: delegate entirely to sendPlanMode which calls /v1/plans/generate
+    const _currentChatForPlan = useChatStore.getState().store.chats[currentChatId];
+    const _isPlanChat = !!(_currentChatForPlan as any)?.planChat || useChatStore.getState().planMode;
+    if (_isPlanChat) {
+      return sendPlanMode(effectiveApiUrl, abortControllersRef, fileUploadMap, generateSummary, directMessage);
     }
 
     const currentSkill = activeSkill;
