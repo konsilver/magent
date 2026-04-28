@@ -5,35 +5,15 @@ input:
   //你可以在context中看到整个plan的执行进度，这是你的step id
   "step_id": 
 
-  "previous_step_output": {
-    // 上一个agent定义我这一步的局部约束
-    "local_constraint": {...},
-
-    // 上一个agent定义我这一步的输出结构
-    "expected_schema": {...}
-  },
+  //你能在global中看到上一步agent给你做的约束
+  //你能在context中看到整个计划的当前执行状况、用户特征、全局约束等信息
 
   "retrieved_memory": {
     //在记忆中查找和我现在负责的子任务相似的任务的解决方案经验
     "relevant_patterns": [...]
   },
 
-  //qa裁决这一步需要重新做时非空
-  "failure_reason": [
-    //遍历每一条，把错误汇总到这里
-    {
-      // 是否满足局部约束（第一优先级）
-      "local_constraint_satisfied": true,
-
-      // 是否满足全局约束（方向性）
-      "global_constraint_satisfied": true,
-
-      "description": "...",
-      "confidence": 0.0
-      //填入context
-      "suggestion": "..."
-    }
-  ]
+  //当你被QA check结果是REDO后，你能在global中查看你这一步的failure_reason
 }
 
 
@@ -43,7 +23,7 @@ output:
   "result": "...",
 
   "next_step_instruction": {
-    // 给下一步agent的局部约束，允许有软约束和硬约束
+    // 给下一步agent的局部约束，允许有软约束和硬约束，属于global
     "local_constraint": {
       "constraint": "...",
 
@@ -61,7 +41,7 @@ output:
       "priority": "hard | soft",
     },
 
-    // 下一步输出格式（必须可验证）要和local_constraint中的schema类约束一致
+    // 下一步输出格式（必须可验证）要和local_constraint中的schema类约束一致，属于global
     "expected_output_schema": {
       "fields": [...],
       "types": {...},
@@ -70,6 +50,7 @@ output:
     }
   }
 
+  //属于global
   "tool_use_trace": ...
 }
 

@@ -1,23 +1,18 @@
-//你拥有查看context的权利
+//你能看到context，它是你LLM的prompt之一
 input:
 {
-  //是否是整个任务完成后的全局检查，如果是则下面的输入内容为空，你的判断依据在context的success_criteria
+  //是否是整个任务完成后的全局检查，如果true，则你的判断依据在context的check字段
   "global": false,
 
   //如果非全局检查，则是检查某个subagent的执行结果情况
-  "step_id":
-
-  // step的上一个agent定义这一步的局部约束
-  "local_constraint": {...},
-
-  //step的上一个agent定义这一步的输出结构
-  "expected_schema": {...}
+  "step_id": 1
 }
 
 output（非全局检查）:
 {
-  "verdict": "PASS | REDO_STEP | REPLAN ",
+  "verdict": "PASS | REDO | REPLAN ",
 
+  //属于global
   "failure_reason": [
     //遍历每一条，把错误汇总到这里
     {
@@ -29,19 +24,19 @@ output（非全局检查）:
 
       "description": "...",
       "confidence": 0.0
-      //填入context
       "suggestion": "..."
     }
   ]
 }
-output（全局检查）
+
+output（全局检查），属于global
 {
   "plan_suggestion": "..."
 }
 
 //你的判断依据已经被其他agent定义，一般分下面两种：
 
-//这种为硬约束时，必须遵守，如果是软约束则触发LLM judge
+//这种为hard硬约束时必须遵守，如果是soft软约束则通过LLM judge判断是否符合
 constraints": {
   "constraint": "...",
 
@@ -67,27 +62,31 @@ constraints": {
 }
 
 
-//QA在subagent执行某一步后检查：
+//QA在subagent执行某一步后检查（局部检查）：
 
-1. 先检查当前step的expected_output_schema是否符合，如果不符合结果为REDO_STEP
-2. 验证global_constraints（priority=hard）+ local_constraint（priority=hard），如果任意一条不符合结果为REDO_STEP
-3. output 是否与 assumptions 一致, 如果任意一条不符合结果为REDO_STEP
-4. 检查局部constraint中的soft部分，交给LLM judge，如果返回fail or low confidence（<0.6）则REDO_STEP
-5. 对context中的"user"和"plan"部分进行LLM judge，判定是否REPLAN（confidence<0.8时触发）
-6. 注意当你判断失败后不要直接结束check，而是继续检查未检查的点，将错误争取遍历发现，反馈给重做的subagent或planner
+1. 先检查当前step的expected_output_schema是否符合，如果不符合结果为REDO
+2. 验证global_constraints（priority=hard）+ local_constraint（priority=hard），如果任意一条不符合结果为REDO
+3. output 是否与 assumptions 一致, 如果任意一条不符合结果为REDO
+4. 检查局部constraint中的soft部分，交给LLM judge，如果返回fail or low confidence（<0.6）则REDO
+5. 对context进行LLM judge，判定是否REPLAN（confidence<0.8时触发）
+6. 注意当你判断失败后不要直接结束check，而是继续检查未检查的点，将错误争取遍历发现，一起反馈给重做的subagent或planner
 
 
 //QA在整个plan执行完后检查：
-根据context中的success_criteria对最终结果进行检查，给出优化建议，这个优化建议会伴随计划存入memory
+根据context中的check对最终结果进行检查，这里不再区分是否通过，而是只需要给出对应优化建议，这个优化建议属于global
 
 //当QA面对失败情况时：
-当你判定REDO_STEP时，先让对应subagent REDO_STEP，次数达到2次以上，触发planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
+当你判定REDO时，先让对应subagent重做子任务，次数达到2次以上，触发planner在当前step开始重新规划（之前的规划不改），而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
 
 当你判定REPLAN时，planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
 
-系统重置后，你就像重新面对一个计划那样进行check（次数也重置）
+系统重置后，你就像重新面对一个计划那样进行check（判定次数也重置）
 
 当你判定planner或subagent重做后，你需要给他们你判定失败的原因和优化建议，并把优化建议分别填入context的plan-steps-suggestion和plan-plan_suggestion
+
+你的LLM的confidence字段是用来裁定局部检查的结果的
+
+你在局部检查的输出结果中，description是用于告诉subagent怎么重做才能成功的，而suggestion更多的是对该步骤容易出错的地方做总结（根据subagent的错误），以后会写入记忆中
 
 
 

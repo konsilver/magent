@@ -187,17 +187,26 @@ def _make_context_board() -> Dict[str, Any]:
             "global_constraints": [],
             "assumptions": [],
         },
-        "only_qa": {
-            "success_criteria": [],
-        },
     }
 
 
 def _context_board_summary(board: Dict[str, Any]) -> str:
-    """Serialize the public parts of the board for agent prompts."""
+    """Serialize the public parts of the board for agent prompts.
+
+    Only exposes fields defined in data_structure/context.md — internal
+    runtime fields (suggestion, tool_use_trace, _*) are intentionally excluded.
+    """
+    _PUBLIC_STEP_KEYS = {"step_id", "brief_description", "description", "output"}
+    steps = [
+        {k: v for k, v in s.items() if k in _PUBLIC_STEP_KEYS}
+        for s in board.get("plan", {}).get("steps", [])
+    ]
     public = {
         "user": board.get("user", {}),
-        "plan": board.get("plan", {}),
+        "plan": {
+            "user_goal": board.get("plan", {}).get("user_goal"),
+            "steps": steps,
+        },
         "check": board.get("check", {}),
     }
     return json.dumps(public, ensure_ascii=False, indent=2)

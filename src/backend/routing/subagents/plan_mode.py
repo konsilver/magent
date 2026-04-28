@@ -3,13 +3,13 @@
 Phase 1 (generate): UserProfile + Planner run in parallel, memory queried,
                     structured step list produced and persisted.
 Phase 2 (execute):  Warmup Agent reads context board (user + plan), sets
-                    global constraints / success_criteria / first-step
+                    global constraints / assumptions / first-step
                     local constraint.  Steps are then executed sequentially
                     by SubAgents; each writes its output to the context board
                     and prepares the next step's local constraint.  A QA
                     Agent validates every step result.
                     Control flow: PASS → next step,
-                                  REDO_STEP (up to 2×) → retry current,
+                                  REDO (up to 2×) → retry current,
                                   REPLAN → Planner re-plans from failure point,
                                   global_replan > 1 → SSE interrupted, new plan
                                   sent to frontend for user confirmation.
@@ -35,8 +35,8 @@ import time as _time
 logger = logging.getLogger(__name__)
 
 # ── Control-flow constants ────────────────────────────────────────────────────
-_MAX_REDO_PER_STEP = 2      # REDO_STEP retries before escalating to REPLAN
-_MAX_LOCAL_REPLAN = 1       # local REPLAN count before triggering full global reset
+_MAX_REDO_PER_STEP = 2      # REDO retries before escalating to REPLAN
+_MAX_LOCAL_REPLAN = 2       # local REPLAN count before triggering full global reset
 
 # ── Plan store, context board, and shared utility helpers ────────────────────
 from routing.subagents.plan_store import (
@@ -356,7 +356,6 @@ async def astream_execute_plan(
         warmup_result = {
             "refined_user_goal": user_goal,
             "global_constraints": [],
-            "success_criteria": [],
             "assumptions": [],
             "next_step_instruction": {"local_constraint": {}, "expected_output_schema": {}},
         }
@@ -466,10 +465,10 @@ async def astream_execute_plan(
                 if qa_verdict == "PASS":
                     break
 
-                if qa_verdict == "REDO_STEP":
+                if qa_verdict == "REDO":
                     redo_count += 1
                     redo_failure_reason = qa_data.get("failure_reason", [])
-                    logger.warning("[QA] REDO_STEP step=%d redo=%d", step.step_order, redo_count)
+                    logger.warning("[QA] REDO step=%d redo=%d", step.step_order, redo_count)
                     _new_suggestions = "; ".join(
                         r.get("suggestion", "") for r in redo_failure_reason if r.get("suggestion")
                     )
@@ -524,6 +523,15 @@ async def astream_execute_plan(
                         step_details=[{"step_id": s.step_id, "title": s.title} for s in steps],
                     )
 
+                    # 通知前端发生了全局重置
+                    yield {
+                        "type": "plan_global_reset_notify",
+                        "plan_id": plan_id,
+                        "failure_reason": failure_summary,
+                        "reset_count": global_reset_count,
+                    }
+
+                    # 重新进入准备阶段：user_profile + planner 并发执行，生成新计划
                     replan_ctx = {
                         "complete": True,
                         "failed_step": step.step_order,
@@ -543,7 +551,7 @@ async def astream_execute_plan(
                         user_input=plan_dict["task_input"],
                         user_id=user_id,
                         model_name=_role_model("plan", model_name),
-                        tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
+                        tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids, _load_visible_agents(db, user_id, enabled_agent_ids)),
                         retrieved_memory=replan_memory,
                         board=_reset_board,
                         replan_context=replan_ctx,
@@ -562,27 +570,59 @@ async def astream_execute_plan(
                             sd["expected_agents"] = [a for a in (sd.get("expected_agents") or []) if a in _valid_agents]
                         new_steps = new_plan_data["steps"]
 
-                    yield {
-                        "type": "plan_global_reset",
-                        "plan_id": plan_id,
-                        "failure_reason": failure_summary,
-                        "reset_count": global_reset_count,
-                        "new_plan": {
-                            "user_goal": new_plan_data.get("user_goal", "") if new_plan_data else "",
-                            "steps": [
-                                {
-                                    "step_order": i + 1,
-                                    "title": s.get("title", f"步骤{i+1}"),
-                                    "brief_description": s.get("brief_description", ""),
-                                    "description": s.get("description", ""),
-                                    "expected_tools": s.get("expected_tools", []),
-                                    "expected_skills": s.get("expected_skills", []),
-                                }
-                                for i, s in enumerate(new_steps)
-                            ],
-                            "total_steps": len(new_steps),
-                        },
+                    # 存储新计划，等待用户确认后再执行
+                    _new_plan_id = f"plan_{uuid.uuid4().hex[:16]}"
+                    _new_agent_name_map = plan_meta.get("agent_name_map", {})
+                    _new_extra: Dict[str, Any] = {
+                        "user_goal": new_plan_data.get("user_goal", plan_dict["task_input"]) if new_plan_data else plan_dict["task_input"],
+                        "retrieved_memory": replan_memory,
+                        "user_profile": _reset_board.get("user", {}),
                     }
+                    if uploaded_files:
+                        _new_extra["uploaded_files"] = uploaded_files
+                    if _new_agent_name_map:
+                        _new_extra["agent_name_map"] = _new_agent_name_map
+                    _new_plan_dict = _make_plan_dict(
+                        plan_id=_new_plan_id,
+                        user_id=user_id,
+                        title=new_plan_data.get("title", "重规划方案") if new_plan_data else "重规划方案",
+                        description=new_plan_data.get("description", "") if new_plan_data else "",
+                        task_input=plan_dict["task_input"],
+                        steps=new_steps,
+                        extra_data=_new_extra,
+                    )
+                    _store_plan(_new_plan_dict)
+
+                    # 发送 plan_generated 事件，让前端展示新计划等待用户确认
+                    _new_plan_event: Dict[str, Any] = {
+                        "type": "plan_generated",
+                        "plan_id": _new_plan_id,
+                        "title": _new_plan_dict["title"],
+                        "description": _new_plan_dict["description"],
+                        "task_input": _new_plan_dict["task_input"],
+                        "status": _new_plan_dict["status"],
+                        "total_steps": _new_plan_dict["total_steps"],
+                        "completed_steps": 0,
+                        "result_summary": None,
+                        "steps": [
+                            {
+                                "step_id": s["step_id"],
+                                "step_order": s["step_order"],
+                                "title": s["title"],
+                                "brief_description": s.get("brief_description", ""),
+                                "description": s["description"],
+                                "expected_tools": s["expected_tools"],
+                                "expected_skills": s["expected_skills"],
+                                "expected_agents": s["expected_agents"],
+                                "status": s["status"],
+                                "result_summary": None,
+                            }
+                            for s in _new_plan_dict["steps"]
+                        ],
+                    }
+                    if _new_agent_name_map:
+                        _new_plan_event["agent_name_map"] = _new_agent_name_map
+                    yield _new_plan_event
                     return
                 else:
                     yield {"type": "plan_step_progress", "step_id": step.step_id,
@@ -598,7 +638,7 @@ async def astream_execute_plan(
                         user_input=plan_dict["task_input"],
                         user_id=user_id,
                         model_name=_role_model("plan", model_name),
-                        tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids),
+                        tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids, _load_visible_agents(db, user_id, enabled_agent_ids)),
                         retrieved_memory=replan_memory,
                         board=board,
                         replan_context=replan_ctx,
@@ -635,19 +675,35 @@ async def astream_execute_plan(
                         ] + all_new_steps
                         updated = _replace_stored_steps(plan_id, merged_steps)
                         if updated:
-                            old_board_steps = board["plan"]["steps"]
+                            # 已完成步骤（step_idx之前）的board数据按step_id保留
+                            old_board_by_order = {bs["step_id"]: bs for bs in board["plan"]["steps"]}
                             steps = [_StepProxy(s) for s in updated["steps"]]
-                            board["plan"]["steps"] = [
-                                {
-                                    "step_id": s["step_id"],
-                                    "brief_description": s.get("brief_description", ""),
-                                    "description": s.get("description") or s.get("title", ""),
-                                    "output": old_board_steps[i]["output"] if i < len(old_board_steps) else None,
-                                    "suggestion": old_board_steps[i].get("suggestion") if i < len(old_board_steps) else None,
-                                    "tool_use_trace": old_board_steps[i].get("tool_use_trace", []) if i < len(old_board_steps) else [],
-                                }
-                                for i, s in enumerate(updated["steps"])
-                            ]
+                            new_board_steps = []
+                            for i, s in enumerate(updated["steps"]):
+                                if i < step_idx:
+                                    # 已完成步骤：用旧board数据（按step_id匹配不到则按索引回退）
+                                    old_bs = old_board_by_order.get(s["step_id"])
+                                    if old_bs is None and i < len(board["plan"]["steps"]):
+                                        old_bs = board["plan"]["steps"][i]
+                                    new_board_steps.append({
+                                        "step_id": s["step_id"],
+                                        "brief_description": s.get("brief_description", ""),
+                                        "description": s.get("description") or s.get("title", ""),
+                                        "output": old_bs["output"] if old_bs else None,
+                                        "suggestion": old_bs.get("suggestion") if old_bs else None,
+                                        "tool_use_trace": old_bs.get("tool_use_trace", []) if old_bs else [],
+                                    })
+                                else:
+                                    # 新规划步骤：初始化为空
+                                    new_board_steps.append({
+                                        "step_id": s["step_id"],
+                                        "brief_description": s.get("brief_description", ""),
+                                        "description": s.get("description") or s.get("title", ""),
+                                        "output": None,
+                                        "suggestion": None,
+                                        "tool_use_trace": [],
+                                    })
+                            board["plan"]["steps"] = new_board_steps
                             _update_stored_step(plan_id, steps[step_idx].step_id, status="running", started_at=datetime.utcnow().isoformat())
                             _replan_reason = "; ".join(
                                 r.get("suggestion", "") or r.get("description", "")

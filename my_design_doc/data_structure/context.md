@@ -1,6 +1,9 @@
 # 这里面的数据结构是在计划模式下,所有agent共享的“黑板”，他们把自己负责的部分内容填充到这里，并且读取自己需要的模块内容
-当一个计划重新产生（从零制定，如全局重置），这里的结构内容也重置为空，但如果是QA判定某一步开始的REPLAN，则context不重置
+在整个计划执行的生命周期内，context应该一直保留在进程内存中并实时更新（它算作全局变量）
 
+每次发给对应agent的LLM的prompt中，都应该包含context的全部内容
+
+当一个计划重新产生（从零制定，如全局重置或计划被用户拒绝），这里的结构内容也重置为空，但如果是QA判定某一步开始的REPLAN，则context不重置
 
 //有关用户的个性特征会被提取到这里
 "user":{
@@ -20,46 +23,31 @@
             "description": "...",
             //对应subagent的输出结果写在这里,注意要经过QA check成功后再写
             "output": "...",
-            //QA检查当前step需要REDO后，把优化建议记在这里，以后存入记忆，如果这一步重做多次则拼接填入
-            "suggestion": "..."
-            //subagent做完自己的任务后总结工具调用轨迹，用于存入memory
-            "tool_use_trace": ...
         }
     ]
-
-    //计划正常执行完成情况下，填入QA根据success_criteria给出的优化建议
-    //计划被拒绝情况下，包括用户输入“重新规划+建议”或QA检测REPLAN超过一次后触发全局重置，填入“用户建议”或QA的优化建议
-    "plan_suggestion": "..."
 }
 
+//每个subagent做子任务时都要遵循的约束（有软硬之分）
 "check":{
     //warmup_agent写入,每个subagent执行完step QA要检查
     "global_constraints": [
         {
         "constraint": "...",
         "type": "semantic | logic | format",
-        "priority": "hard"
+              // QA 如何验证
+        "check_method": "...",
+                /**分为 1. rule_match 例如是为必须为json，是否必须包含某些字段，是否满足长度格式
+                    2. schema_validation  是否满足output schema
+                    3. constraint_check   软约束，交给LLM judge
+                **/
+        "priority": "hard | soft"
         }
     ],
     // 显式假设（避免隐式错误）
     "assumptions": [...]
 }
 
-//仅QA可见
-"only_qa":{
-    //warmup_agent写入，只有整个计划执行完，QA才会根据这个检查输出结果
-    "success_criteria": [
-        {
-        "criterion": "...",
-        "check_method": "..." 
-            /**分为 1. rule_match 例如是为必须为json，是否必须包含某些字段，是否满足长度格式
-                    2. schema_validation  是否满足output schema
-                    3. constraint_check   是否满足约束
-                    4. llm_judge
-            **/
-        }
-    ],
-}
+
 
 
 
