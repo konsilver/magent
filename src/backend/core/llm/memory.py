@@ -84,22 +84,28 @@ def _patch_milvus_create_col() -> None:
                 logger.info(f"Collection {collection_name} already exists. Skipping creation.")
                 desc = self.client.describe_collection(collection_name=collection_name)
                 field_names = {f.get("name") for f in desc.get("fields", [])}
-                self._has_bm25_schema = "text" in field_names and "sparse" in field_names
+                has_text_sparse = "text" in field_names and "sparse" in field_names
+                # 只有 Milvus 原生支持 BM25 Function 时才启用 bm25_schema；
+                # 当前 Milvus 版本不支持，sparse 索引用 IP，insert 不自动填 sparse，强制禁用。
+                self._has_bm25_schema = False
+                if has_text_sparse:
+                    logger.warning(
+                        f"[MemoryService] Collection '{collection_name}' has text/sparse fields "
+                        "but BM25 is not supported on this Milvus version; disabling hybrid search."
+                    )
                 try:
                     self.client.load_collection(collection_name)
                 except Exception as load_exc:
-                    # 旧 collection 可能缺少 sparse 字段索引，load 会报错，但 dense 搜索仍可用
                     logger.warning(
                         f"[MemoryService] load_collection({collection_name}) failed (non-fatal): {load_exc}"
                     )
                 return
 
+            # 新建：只使用 dense 向量，不加 text/sparse 字段，避免 BM25 兼容性问题
             fields = [
                 FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=512),
                 FieldSchema(name="vectors", dtype=DataType.FLOAT_VECTOR, dim=vector_size),
                 FieldSchema(name="metadata", dtype=DataType.JSON),
-                FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-                FieldSchema(name="sparse", dtype=DataType.SPARSE_FLOAT_VECTOR),
             ]
             schema = CollectionSchema(fields, enable_dynamic_field=True)
 
@@ -110,18 +116,11 @@ def _patch_milvus_create_col() -> None:
                 index_type="AUTOINDEX",
                 index_name="vector_index",
             )
-            index_params.add_index(
-                field_name="sparse",
-                index_type="SPARSE_INVERTED_INDEX",
-                metric_type="IP",
-                index_name="sparse_index",
-            )
             self.client.create_collection(
                 collection_name=collection_name,
                 schema=schema,
                 index_params=index_params,
             )
-            # sparse field exists but without BM25 auto-generation
             self._has_bm25_schema = False
 
         MilvusDB.create_col = _compat_create_col
