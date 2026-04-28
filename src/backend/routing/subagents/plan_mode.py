@@ -146,12 +146,19 @@ async def astream_generate_plan(
     if not (user_reply and previous_plan_id):
         yield {"type": "plan_generating", "delta": "正在分析用户特征并查询历史记忆...\n"}
 
+    logger.info("[Phase1] user=%s: launching UserProfileAgent + retrieve_plan_memory in parallel", user_id)
+    _phase1_t0 = _time.monotonic()
     retrieved_memory, _ = await asyncio.gather(
         _retrieve_plan_memory(user_id, task_description),
         _run_user_profile_agent(user_id, task_description, _role_model("user_profile", model_name), board),
     )
+    logger.info("[Phase1] parallel gather done in %.0fms: similar_tasks=%d graph_plans=%d",
+                (_time.monotonic() - _phase1_t0) * 1000,
+                len(retrieved_memory.get("similar_tasks", [])),
+                len(retrieved_memory.get("graph_plans", [])))
 
     yield {"type": "plan_generating", "delta": "正在制定执行计划...\n"}
+    logger.info("[Phase1] calling Planner for user=%s", user_id)
 
     try:
         plan_data = await _run_planner(
@@ -338,6 +345,8 @@ async def astream_execute_plan(
     ]
 
     # ── Warmup Phase ──────────────────────────────────────────────────────────
+    logger.info("[Phase2] plan_id=%s user=%s total_steps=%d: starting Warmup Agent",
+                plan_id, user_id, plan_dict["total_steps"])
     yield {"type": "plan_step_progress", "step_id": None, "delta": "Warmup Agent 正在初始化执行语义空间...\n"}
 
     warmup_memory = {

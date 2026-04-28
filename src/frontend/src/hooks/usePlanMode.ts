@@ -378,10 +378,51 @@ export async function sendPlanMode(
       const intentResp = await generatePlanStream(msg, 'qwen', abortController.signal, enabledMcpIds, enabledSkillIds, enabledKbIds, currentChatId, historyMessages, attachments, undefined, currentPlanId, msg);
       if (!intentResp.ok) throw new Error(`意图识别请求失败: ${intentResp.status}`);
 
-      const intentEvents = await readPlanSse(intentResp);
-      const confirmEvt = intentEvents.find(e => e.type === 'plan_confirm');
-      const newPlanEvt = intentEvents.find(e => e.type === 'plan_generated');
-      const errorEvt = intentEvents.find(e => e.type === 'plan_error');
+      // Stream intent events — show plan_generating progress in real time
+      const intentDecoder = new TextDecoder();
+      const intentReader = intentResp.body?.getReader();
+      if (!intentReader) throw new Error('No response body');
+      let intentBuf = '';
+      let confirmEvt: Record<string, unknown> | null = null;
+      let newPlanEvt: Record<string, unknown> | null = null;
+      let errorEvt: Record<string, unknown> | null = null;
+      let intentProgressText = '正在识别意图...';
+
+      try {
+        intentOuter: while (true) {
+          const { done, value } = await intentReader.read();
+          if (done) break;
+          intentBuf += intentDecoder.decode(value, { stream: true });
+          const blocks = intentBuf.split(/\n\n+/);
+          intentBuf = blocks.pop() || '';
+          for (const block of blocks) {
+            for (const line of block.split(/\r?\n/)) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data:')) continue;
+              const data = trimmed.slice(5).trim();
+              if (data === '[DONE]') break intentOuter;
+              try {
+                const evt = JSON.parse(data) as Record<string, unknown>;
+                if (evt.type === 'plan_generating') {
+                  intentProgressText += String(evt.delta || '');
+                  appendAssistant(intentProgressText, true);
+                } else if (evt.type === 'plan_confirm') {
+                  confirmEvt = evt;
+                  break intentOuter;
+                } else if (evt.type === 'plan_generated') {
+                  newPlanEvt = evt;
+                  break intentOuter;
+                } else if (evt.type === 'plan_error') {
+                  errorEvt = evt;
+                  break intentOuter;
+                }
+              } catch { /* skip invalid JSON */ }
+            }
+          }
+        }
+      } finally {
+        intentReader.releaseLock();
+      }
 
       if (errorEvt) { appendAssistant(`操作失败：${errorEvt.error}`, false); return; }
 
@@ -399,15 +440,52 @@ export async function sendPlanMode(
       }
 
     } else {
-      // Phase 1: Generate plan
-      appendAssistant('🔍 正在分析任务并生成执行计划...', true);
+      // Phase 1: Generate plan (streaming — show progress deltas in real time)
+      appendAssistant('正在分析任务并生成执行计划...', true);
 
       const genResp = await generatePlanStream(msg, 'qwen', abortController.signal, enabledMcpIds, enabledSkillIds, enabledKbIds, currentChatId, historyMessages, attachments);
       if (!genResp.ok) throw new Error(`计划生成请求失败: ${genResp.status}`);
 
-      const events = await readPlanSse(genResp);
-      const planEvt = events.find(e => e.type === 'plan_generated');
-      const errorEvt = events.find(e => e.type === 'plan_error');
+      const decoder = new TextDecoder();
+      const genReader = genResp.body?.getReader();
+      if (!genReader) throw new Error('No response body');
+      let genBuf = '';
+      let planEvt: Record<string, unknown> | null = null;
+      let errorEvt: Record<string, unknown> | null = null;
+      let progressText = '';
+
+      try {
+        outer: while (true) {
+          const { done, value } = await genReader.read();
+          if (done) break;
+          genBuf += decoder.decode(value, { stream: true });
+          const blocks = genBuf.split(/\n\n+/);
+          genBuf = blocks.pop() || '';
+          for (const block of blocks) {
+            for (const line of block.split(/\r?\n/)) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data:')) continue;
+              const data = trimmed.slice(5).trim();
+              if (data === '[DONE]') break outer;
+              try {
+                const evt = JSON.parse(data) as Record<string, unknown>;
+                if (evt.type === 'plan_generating') {
+                  progressText += String(evt.delta || '');
+                  appendAssistant(progressText, true);
+                } else if (evt.type === 'plan_generated') {
+                  planEvt = evt;
+                  break outer;
+                } else if (evt.type === 'plan_error') {
+                  errorEvt = evt;
+                  break outer;
+                }
+              } catch { /* skip invalid JSON */ }
+            }
+          }
+        }
+      } finally {
+        genReader.releaseLock();
+      }
 
       if (errorEvt) {
         appendAssistant(`计划生成失败：${errorEvt.error}`, false);

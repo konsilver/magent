@@ -109,6 +109,8 @@ async def _run_subagent_step(
         retrieved_memory, failure_reason,
     )
 
+    logger.info("[SubAgent] START step=%d(%s) id=%s", step.step_order, step.title, step.step_id)
+
     step_text = ""
     step_tool_calls: List[Dict] = []
     _step_start = _time.monotonic()
@@ -136,16 +138,21 @@ async def _run_subagent_step(
         _use_pool = _pool.is_ready
         if _use_pool:
             try:
+                _acquire_t0 = _time.monotonic()
                 _pooled = await _pool._acquire_direct()
                 _pooled.reset()
                 agent = _pooled.agent
                 agent.max_iters = _step_max_iters
                 _pool_slot = _pooled
+                logger.info("[SubAgent] step=%d acquired from pool in %.0fms",
+                            step.step_order, (_time.monotonic() - _acquire_t0) * 1000)
             except Exception as _pe:
-                logger.warning("[plan-exec] pool acquire failed (%s), falling back", _pe)
+                logger.warning("[SubAgent] step=%d pool acquire failed (%s), falling back to create_agent_executor",
+                               step.step_order, _pe)
                 _use_pool = False
 
         if not _use_pool:
+            _create_t0 = _time.monotonic()
             agent, mcp_clients = await create_agent_executor(
                 enabled_mcp_ids=None,
                 enabled_skill_ids=None,
@@ -155,6 +162,8 @@ async def _run_subagent_step(
                 isolated=True,
                 max_iters=_step_max_iters,
             )
+            logger.info("[SubAgent] step=%d created fresh agent in %.0fms",
+                        step.step_order, (_time.monotonic() - _create_t0) * 1000)
 
         _plan_ctx_section = _build_plan_context_prompt_section(
             board, step, len(board.get("plan", {}).get("steps", []))
@@ -295,14 +304,24 @@ async def _run_subagent_step(
             step_text = re.sub(r"<think>.*?</think>", "", step_text, flags=re.DOTALL).strip()
             step_tool_calls = _collected_calls
 
+            _exec_elapsed = (_time.monotonic() - _step_start) * 1000
+            logger.info("[SubAgent] step=%d(%s) DONE elapsed=%.0fms tool_calls=%d output_chars=%d",
+                        step.step_order, step.title, _exec_elapsed,
+                        len(step_tool_calls), len(step_text))
+            if step_tool_calls:
+                tool_names = [tc.get("name", "?") for tc in step_tool_calls[:5]]
+                logger.info("[SubAgent] step=%d tools used: %s", step.step_order, tool_names)
+
             yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": step_text}
 
         except asyncio.TimeoutError:
+            logger.warning("[SubAgent] step=%d(%s) TIMEOUT", step.step_order, step.title)
             step_text = "步骤执行被取消"
             _step_outcome = "failed"
             _step_error_msg = "timeout"
         except Exception as _reply_exc:
             _err = f"{type(_reply_exc).__name__}: {_reply_exc}".strip(": ")
+            logger.warning("[SubAgent] step=%d(%s) ERROR: %s", step.step_order, step.title, _err)
             step_text = f"执行出错: {_err or type(_reply_exc).__name__}"
             _step_outcome = "failed"
             _step_error_msg = _err

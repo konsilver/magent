@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time as _time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -29,8 +30,11 @@ async def _call_llm_agent(
     model_name: str,
     user_id: str,
     timeout: int = 120,
+    _agent_label: str = "LLMAgent",
 ) -> str:
     """Call a tool-disabled agent and return stripped text output."""
+    _t0 = _time.monotonic()
+    logger.info("[%s] START model=%s user=%s timeout=%ds", _agent_label, model_name, user_id, timeout)
     agent, mcp_clients = await create_agent_executor(
         disable_tools=True,
         model_name=model_name,
@@ -59,7 +63,16 @@ async def _call_llm_agent(
                 text = str(reply.content)
         else:
             text = str(reply)
-        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        result = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        _elapsed = (_time.monotonic() - _t0) * 1000
+        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d", _agent_label, _elapsed, len(result))
+        return result
+    except asyncio.TimeoutError:
+        logger.warning("[%s] TIMEOUT after %ds", _agent_label, timeout)
+        raise
+    except Exception as exc:
+        logger.warning("[%s] ERROR after %.0fms: %s", _agent_label, (_time.monotonic() - _t0) * 1000, exc)
+        raise
     finally:
         await close_clients(mcp_clients)
 
@@ -112,15 +125,20 @@ async def _run_user_profile_agent(
         user_input=user_input,
         memory_context=memory_context,
     )
+    logger.info("[UserProfileAgent] extracting user profile for user=%s input_chars=%d", user_id, len(user_input))
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=30)
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=30, _agent_label="UserProfileAgent")
         data = _parse_json_output(text)
         if data:
             board["user"]["urgent"] = data.get("urgent")
             board["user"]["mem"] = data.get("mem")
+            logger.info("[UserProfileAgent] profile written to board: urgent=%r mem_present=%s",
+                        str(data.get("urgent", ""))[:80], bool(data.get("mem")))
             _save_user_profile_background(user_id, data, model_name=model_name)
+        else:
+            logger.warning("[UserProfileAgent] JSON parse failed, board unchanged")
     except Exception as exc:
-        logger.debug("[UserProfileAgent] failed (non-critical): %s", exc)
+        logger.warning("[UserProfileAgent] failed (non-critical): %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -188,14 +206,17 @@ async def _classify_user_intent(user_reply: str, model_name: str, user_id: str) 
 
     Returns 'confirm' or 'replan'.
     """
+    logger.info("[IntentClassify] classifying user reply (len=%d): %r", len(user_reply), user_reply[:80])
     prompt = _INTENT_CLASSIFY_PROMPT.format(user_reply=user_reply[:500])
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=20)
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=20, _agent_label="IntentClassify")
         data = _parse_json_output(text)
         if data and data.get("intent") in ("confirm", "replan"):
+            logger.info("[IntentClassify] intent=%s", data["intent"])
             return data["intent"]
+        logger.warning("[IntentClassify] unexpected output, defaulting to confirm: %r", text[:100])
     except Exception as exc:
-        logger.debug("[IntentClassify] failed: %s", exc)
+        logger.warning("[IntentClassify] failed (defaulting to confirm): %s", exc)
     return "confirm"
 
 
@@ -243,6 +264,13 @@ async def _run_planner(
 - 失败原因: {json.dumps(replan_context.get('failure_reason', {}), ensure_ascii=False)}
 请从失败步骤开始重新规划，修正导致失败的问题。"""
 
+    is_replan = bool(replan_context)
+    _label = "Planner(replan)" if is_replan else "Planner"
+    logger.info("[%s] START user=%s input_chars=%d similar_tasks=%d graph_plans=%d",
+                _label, user_id, len(user_input),
+                len(retrieved_memory.get("similar_tasks", [])),
+                len(retrieved_memory.get("graph_plans", [])))
+
     prompt = _PLANNER_PROMPT_TEMPLATE.format(
         user_context=user_context,
         memory_context=memory_context,
@@ -251,9 +279,10 @@ async def _run_planner(
         tools_desc=tools_desc,
     )
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=90)
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=90, _agent_label=_label)
         data = _parse_json_output(text)
         if data:
+            steps = data.get("steps", [])
             board["plan"]["user_goal"] = data.get("user_goal", "")
             board["plan"]["steps"] = [
                 {
@@ -264,11 +293,15 @@ async def _run_planner(
                     "suggestion": None,
                     "tool_use_trace": [],
                 }
-                for i, s in enumerate(data.get("steps", []))
+                for i, s in enumerate(steps)
             ]
+            logger.info("[%s] plan generated: title=%r steps=%d goal_chars=%d",
+                        _label, str(data.get("title", ""))[:60], len(steps), len(data.get("user_goal", "")))
+        else:
+            logger.warning("[%s] JSON parse failed, returning None", _label)
         return data
     except Exception as exc:
-        logger.error("[Planner] failed: %s", exc)
+        logger.error("[%s] failed: %s", _label, exc)
         return None
 
 
@@ -336,19 +369,26 @@ async def _run_warmup(
             memory_lines.append(f"- [相似任务] {st}")
     memory_context = "\n".join(memory_lines) if memory_lines else "（暂无记忆）"
 
+    logger.info("[Warmup] START user=%s similar_tasks=%d", user_id, len(retrieved_memory.get("similar_tasks", [])))
     prompt = _WARMUP_PROMPT_TEMPLATE.format(
         context_board=_context_board_summary(board),
         user_input=user_input,
         memory_context=memory_context,
     )
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=90)
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=90, _agent_label="Warmup")
         data = _parse_json_output(text)
         if data:
             if data.get("refined_user_goal"):
                 board["plan"]["user_goal"] = data["refined_user_goal"]
             board["check"]["global_constraints"] = data.get("global_constraints", [])
             board["check"]["assumptions"] = data.get("assumptions", [])
+            logger.info("[Warmup] refined_goal_chars=%d global_constraints=%d assumptions=%d",
+                        len(data.get("refined_user_goal", "")),
+                        len(data.get("global_constraints", [])),
+                        len(data.get("assumptions", [])))
+        else:
+            logger.warning("[Warmup] JSON parse failed, returning None")
         return data
     except Exception as exc:
         logger.error("[Warmup] failed: %s", exc)
@@ -440,6 +480,8 @@ async def _run_qa(
     user_id: str,
 ) -> Dict[str, Any]:
     """Run QA Agent, return verdict dict."""
+    logger.info("[QA] START step=%s(%r) result_chars=%d has_local_constraint=%s",
+                step.step_id, step.title, len(result), bool(local_constraint))
     prompt = _QA_PROMPT_TEMPLATE.format(
         context_board=_context_board_summary(board),
         step_info=json.dumps({"step_id": step.step_id, "title": step.title, "description": step.description}, ensure_ascii=False),
@@ -448,13 +490,21 @@ async def _run_qa(
         expected_schema=json.dumps(expected_schema, ensure_ascii=False),
     )
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60)
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="QA")
         data = _parse_json_output(text)
         if data and "verdict" in data:
             if isinstance(data.get("failure_reason"), dict):
                 data["failure_reason"] = [data["failure_reason"]]
             elif not isinstance(data.get("failure_reason"), list):
                 data["failure_reason"] = []
+            verdict = data["verdict"]
+            failure_count = len(data.get("failure_reason", []))
+            logger.info("[QA] VERDICT=%s step=%s failure_reasons=%d", verdict, step.step_id, failure_count)
+            if verdict != "PASS" and failure_count:
+                for fr in data["failure_reason"][:3]:
+                    logger.info("[QA]   reason: %s (suggestion: %s)",
+                                str(fr.get("description", ""))[:100],
+                                str(fr.get("suggestion", ""))[:80])
             return data
     except Exception as exc:
         logger.warning("[QA] failed: %s", exc)
@@ -468,15 +518,17 @@ async def _run_qa_final(
     user_id: str,
 ) -> Dict[str, Any]:
     """QA final check at end of plan execution — returns only plan_suggestion."""
+    logger.info("[QA-final] START user=%s final_output_chars=%d", user_id, len(final_output))
     prompt = _QA_FINAL_PROMPT.format(
         user_goal=board["plan"].get("user_goal", ""),
         context_board=_context_board_summary(board),
         final_output=final_output[:2000],
     )
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60)
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="QA-final")
         data = _parse_json_output(text)
         if data and "plan_suggestion" in data:
+            logger.info("[QA-final] suggestion_chars=%d", len(data.get("plan_suggestion", "")))
             return data
     except Exception as exc:
         logger.warning("[QA-final] failed: %s", exc)
