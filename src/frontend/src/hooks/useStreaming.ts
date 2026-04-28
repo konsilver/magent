@@ -514,7 +514,16 @@ export function useStreaming(
             }
 
             if (eventType === 'plan_generating') {
-              return; // suppress raw delta text; plan_generated will show the card
+              // Show progress text while plan is being generated
+              const delta = String(eventObj.delta || '');
+              if (delta) {
+                full += delta;
+                const last = segments[segments.length - 1];
+                if (last?.type === 'text') last.content = (last.content || '') + delta;
+                else segments.push({ type: 'text', content: delta });
+                appendOrUpdate(full, toolCalls, thinking, segments, true);
+              }
+              return;
             }
 
             if (eventType === 'plan_generated') {
@@ -525,10 +534,19 @@ export function useStreaming(
               planModeActive = true;
               const initialMode = eventObj.executing ? 'executing' : 'preview';
               updatePlanCard(true, initialMode);
+              // Track plan id so subsequent messages route through sendPlanMode
+              if (eventObj.plan_id) {
+                useChatStore.getState().setCurrentPlanId(String(eventObj.plan_id));
+                useChatStore.getState().setPlanMode(true);
+              }
               return;
             }
 
             if (eventType === 'plan_needs_confirmation') {
+              if (eventObj.plan_id) {
+                useChatStore.getState().setCurrentPlanId(String(eventObj.plan_id));
+                useChatStore.getState().setPlanMode(true);
+              }
               updatePlanCard(false, 'preview');
               return;
             }
@@ -559,6 +577,7 @@ export function useStreaming(
 
             if (eventType === 'plan_complete') {
               updatePlanCard(false, 'complete', Number(eventObj.completed_steps), Number(eventObj.total_steps), String(eventObj.result_text || ''));
+              useChatStore.getState().setCurrentPlanId(null);
               streamEnded = true;
               addBackendSessionId(currentChatId);
               addLoadedMsgId(currentChatId);
@@ -568,6 +587,14 @@ export function useStreaming(
 
             if (eventType === 'plan_error') {
               const stepId = String(eventObj.step_id || '');
+              if (!planModeActive) {
+                // Generation phase failed — show error as text instead of empty plan card
+                const errMsg = String(eventObj.error || '计划生成失败，请重试');
+                full = errMsg;
+                segments = [{ type: 'text', content: errMsg }];
+                appendOrUpdate(full, toolCalls, thinking, segments, false);
+                return;
+              }
               if (stepId && planStepResults[stepId]) { planStepResults[stepId].status = 'failed'; planStepResults[stepId].summary = String(eventObj.error || '执行出错'); }
               updatePlanCard(true);
               return;

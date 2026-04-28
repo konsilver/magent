@@ -1007,6 +1007,7 @@ async def chat_stream(
             # ── Plan mode: generate plan ─────────────────────────────────────
             if context.get("plan_chat"):
                 plan_id: Optional[str] = None
+                _plan_evt_data: Optional[dict] = None
 
                 async for evt in astream_generate_plan(
                     task_description=request.message,
@@ -1021,14 +1022,48 @@ async def chat_stream(
                     yield f"data: {json.dumps({**evt, 'chat_id': request.chat_id}, ensure_ascii=False)}\n\n"
                     if evt.get("type") == "plan_generated":
                         plan_id = evt.get("plan_id")
+                        _plan_evt_data = evt
 
-                if plan_id:
+                if plan_id and _plan_evt_data:
                     _session = chat_service.get_session(request.chat_id, db_user_id)
                     if _session:
                         _ed = dict(_session.extra_data or {})
                         _ed["pending_plan_id"] = plan_id
                         _session.extra_data = _ed
                         db.commit()
+                    # Persist the plan as an assistant message so it appears in history
+                    _plan_title = _plan_evt_data.get("title", "执行计划")
+                    _plan_desc = _plan_evt_data.get("description", "")
+                    _plan_steps = _plan_evt_data.get("steps", [])
+                    _step_summary = "\n".join(
+                        f"{i+1}. {s.get('title', '')}" for i, s in enumerate(_plan_steps)
+                    )
+                    _plan_content = f"已生成执行计划：**{_plan_title}**\n\n{_plan_desc}\n\n**执行步骤：**\n{_step_summary}"
+                    chat_service.add_message(
+                        chat_id=request.chat_id, role="assistant", content=_plan_content,
+                        model=request.model_name,
+                        extra_data={
+                            "is_markdown": True,
+                            "plan_id": plan_id,
+                            "plan_snapshot": {
+                                "mode": "preview",
+                                "title": _plan_title,
+                                "description": _plan_desc,
+                                "steps": [
+                                    {
+                                        "step_order": s.get("step_order", i + 1),
+                                        "title": s.get("title", ""),
+                                        "description": s.get("description"),
+                                        "expected_tools": s.get("expected_tools", []),
+                                        "expected_skills": s.get("expected_skills", []),
+                                    }
+                                    for i, s in enumerate(_plan_steps)
+                                ],
+                                "total_steps": len(_plan_steps),
+                                "completed_steps": 0,
+                            },
+                        },
+                    )
                     yield f"data: {json.dumps({'type': 'plan_needs_confirmation', 'plan_id': plan_id, 'chat_id': request.chat_id}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return

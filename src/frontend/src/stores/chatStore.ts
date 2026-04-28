@@ -193,7 +193,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setCurrentChatId: (id) => {
     saveCurrentChatId(id);
     const chat = get().store.chats[id];
-    set({ currentChatId: id, sending: get().sendingChatIds.has(id), planMode: !!chat?.planChat, codeExecMode: !!chat?.codeExecChat, currentPlanId: null });
+    // For existing chats, restore planMode from the chat's planChat flag.
+    // For new chats (no planChat property set yet), preserve the current planMode toggle state.
+    const newPlanMode = chat?.planChat !== undefined ? !!chat.planChat : get().planMode;
+    set({ currentChatId: id, sending: get().sendingChatIds.has(id), planMode: newPlanMode, codeExecMode: !!chat?.codeExecChat, currentPlanId: null });
   },
   setInput: (input) => set({ input }),
   setSending: (v) => set({ sending: v }),
