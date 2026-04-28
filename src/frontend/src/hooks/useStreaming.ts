@@ -234,6 +234,7 @@ export function useStreaming(
       let planDesc = '';
       let planStepDefs: Array<Record<string, unknown>> = [];
       let planAgentNameMap: Record<string, string> | undefined;
+      let planModeActive = false; // true once plan_generated received
 
       const buildExecPlanData = (mode: 'preview' | 'executing' | 'complete', completedSteps?: number, totalSteps?: number, resultText?: string): MessageSegment['planData'] => {
         const stepSource = planStepDefs.length > 0 ? planStepDefs : Object.values(planStepResults).sort((a, b) => a.order - b.order);
@@ -513,6 +514,7 @@ export function useStreaming(
               planDesc = String(eventObj.description || '');
               planStepDefs = (Array.isArray(eventObj.steps) ? eventObj.steps : []) as Array<Record<string, unknown>>;
               planAgentNameMap = (eventObj.agent_name_map as Record<string, string>) || undefined;
+              planModeActive = true;
               const initialMode = eventObj.executing ? 'executing' : 'preview';
               updatePlanCard(true, initialMode);
               return;
@@ -728,18 +730,23 @@ export function useStreaming(
         const msgs = [...(c?.messages || [])];
         const last = msgs[msgs.length - 1];
         if (last?.role === 'assistant' && last.ts === placeholderTs) {
-          msgs[msgs.length - 1] = {
-            ...last,
-            content: full,
-            isMarkdown: isMd,
-            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-            thinking: thinking.length > 0 ? thinking : undefined,
-            segments: segments.length > 0 ? segments : undefined,
-            citations: allCitations.length > 0 ? allCitations : undefined,
-            followUpQuestions: metaFollowUps.length > 0 ? metaFollowUps : undefined,
-            messageId: metaMessageId,
-            isStreaming: false,
-          };
+          if (planModeActive) {
+            // Plan mode: only mark streaming done, preserve plan card segments set by updatePlanCard
+            msgs[msgs.length - 1] = { ...last, isStreaming: false };
+          } else {
+            msgs[msgs.length - 1] = {
+              ...last,
+              content: full,
+              isMarkdown: isMd,
+              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+              thinking: thinking.length > 0 ? thinking : undefined,
+              segments: segments.length > 0 ? segments : undefined,
+              citations: allCitations.length > 0 ? allCitations : undefined,
+              followUpQuestions: metaFollowUps.length > 0 ? metaFollowUps : undefined,
+              messageId: metaMessageId,
+              isStreaming: false,
+            };
+          }
         }
         const nextChat: ChatItem = { ...(c as any), messages: msgs, updatedAt: Date.now() };
         return { chats: { ...prev.chats, [currentChatId]: nextChat }, order: [currentChatId, ...(prev.order || []).filter((x) => x !== currentChatId)] };
