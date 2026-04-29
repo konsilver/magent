@@ -461,6 +461,8 @@ export async function sendPlanMode(
         const planSegData = buildPlanSegmentData(newPlanEvt);
         const planSegments: MessageSegment[] = [{ type: 'plan', planData: planSegData }];
         appendAssistant('', false, undefined, planSegments);
+        addBackendSessionId(streamChatId);
+        addLoadedMsgId(streamChatId);
       } else {
         appendAssistant('未能识别您的意图，请明确回复"确认执行"或"重新计划+建议"。', false);
       }
@@ -526,6 +528,9 @@ export async function sendPlanMode(
       const planSegData = buildPlanSegmentData(planEvt);
       const planSegments: MessageSegment[] = [{ type: 'plan', planData: planSegData }];
       appendAssistant('', false, undefined, planSegments);
+      // 计划卡片已渲染到前端，标记消息已加载，防止 lazy-load 用历史文本覆盖
+      addBackendSessionId(streamChatId);
+      addLoadedMsgId(streamChatId);
     }
 
   } catch (e: any) {

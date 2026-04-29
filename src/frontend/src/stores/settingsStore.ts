@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { MemoryItem } from '../types';
-import { getMemories, deleteMemory, clearAllMemories, getMemorySettings, updateMemorySettings, updateMemoryWriteSettings, updateRerankerSettings } from '../api';
+import { getMemories, deleteMemory, clearAllMemories, clearMemoriesByType, getMemorySettings, updateMemorySettings, updateMemoryWriteSettings, updateRerankerSettings } from '../api';
 import { message } from 'antd';
 
 interface SettingsState {
@@ -36,6 +36,8 @@ interface SettingsState {
   removeMemory: (id: string) => Promise<void>;
   /** Clear all memories */
   clearMemories: () => Promise<void>;
+  /** Clear user profile memories only */
+  clearUserProfileMemories: () => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -143,6 +145,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       message.success('已清除所有记忆');
     } catch {
       message.error('清除记忆失败');
+    }
+  },
+
+  clearUserProfileMemories: async () => {
+    try {
+      await clearMemoriesByType('user_profile');
+      set((s) => ({ memoryItems: s.memoryItems.filter((m) => m.metadata?.type !== 'user_profile') }));
+      message.success('已清空用户特征记忆');
+    } catch {
+      message.error('清空用户特征记忆失败');
     }
   },
 }));

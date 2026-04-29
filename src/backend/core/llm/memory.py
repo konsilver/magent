@@ -624,6 +624,20 @@ async def delete_all_memories(user_id: str) -> bool:
     return False
 
 
+async def delete_memories_by_type(user_id: str, memory_type: str) -> bool:
+    """清空用户指定类型的记忆（按 metadata.type 过滤后逐条删除）。"""
+    if not MEM0_ENABLED or not user_id:
+        return False
+    items = await get_memories_by_metadata(user_id, {"type": memory_type})
+    if not items:
+        return True
+    results = await asyncio.gather(
+        *[delete_memory(item["id"]) for item in items if item.get("id")],
+        return_exceptions=True,
+    )
+    return all(r is True for r in results)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Neo4j 直接写入/查询 — 用于精确控制 PlanSkeleton 图结构
 #

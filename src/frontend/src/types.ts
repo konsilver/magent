@@ -226,6 +226,7 @@ export interface MemoryItem {
   created_at?: string;
   updated_at?: string;
   score?: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface Catalog {

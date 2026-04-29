@@ -730,6 +730,10 @@ export async function clearAllMemories(): Promise<void> {
   await apiRequest('/v1/memories', { method: 'DELETE' });
 }
 
+export async function clearMemoriesByType(memoryType: string): Promise<void> {
+  await apiRequest(`/v1/memories?type=${encodeURIComponent(memoryType)}`, { method: 'DELETE' });
+}
+
 export interface UserSettings {
   memory_enabled: boolean;
   memory_write_enabled: boolean;

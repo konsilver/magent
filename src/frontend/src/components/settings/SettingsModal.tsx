@@ -51,6 +51,7 @@ export default function SettingsPage() {
     loadMemories,
     removeMemory,
     clearMemories,
+    clearUserProfileMemories,
   } = useSettingsStore();
 
   const { authUser, doLogout, setAvatarUrl } = useAuthStore();
@@ -323,6 +324,38 @@ export default function SettingsPage() {
                 {memoryLoading ? '加载中...' : '查看详情'}
               </a>
             </div>
+          )}
+
+          {memoryEnabled && (
+            <>
+              <div className="jx-settings-divider" />
+              <div className="jx-settings-row">
+                <div className="jx-settings-rowLeft">
+                  <span className="jx-settings-rowLabel">用户特征记忆</span>
+                  <span className="jx-settings-rowDesc">
+                    清空 AI 记录的您的偏好习惯、认知水平等用户特征信息
+                  </span>
+                </div>
+                <Button
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => {
+                    Modal.confirm({
+                      title: '确认清空用户特征记忆？',
+                      icon: <ExclamationCircleFilled style={{ color: '#F8AB42' }} />,
+                      content: '此操作将删除 AI 记录的所有用户偏好和特征信息，无法恢复。',
+                      okText: '确认清空',
+                      cancelText: '取消',
+                      okButtonProps: { danger: true },
+                      onOk: () => void clearUserProfileMemories(),
+                    });
+                  }}
+                >
+                  清空
+                </Button>
+              </div>
+            </>
           )}
         </div>
 

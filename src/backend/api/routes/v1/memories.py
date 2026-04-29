@@ -7,7 +7,8 @@ DELETE /v1/memories           清空所有记忆
 DELETE /v1/memories/{id}      删除单条记忆
 """
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -18,6 +19,7 @@ from core.llm.memory import (
     get_all_memories,
     delete_memory,
     delete_all_memories,
+    delete_memories_by_type,
 )
 from core.infra.responses import success_response, error_response
 from core.services import UserService
@@ -99,8 +101,16 @@ async def list_memories(user: UserContext = Depends(get_current_user)):
 
 
 @router.delete("")
-async def remove_all_memories(user: UserContext = Depends(get_current_user)):
-    """清空当前用户所有记忆。"""
+async def remove_all_memories(
+    user: UserContext = Depends(get_current_user),
+    type: Optional[str] = Query(None, description="按记忆类型过滤删除，如 user_profile"),
+):
+    """清空当前用户记忆。传入 type 参数时只删除指定类型，否则删除全部。"""
+    if type:
+        ok = await delete_memories_by_type(str(user.user_id), type)
+        if not ok:
+            return error_response(code=50002, message="清空失败", status_code=500)
+        return success_response(data={"message": f"已清空类型为 {type} 的记忆"})
     ok = await delete_all_memories(str(user.user_id))
     if not ok:
         return error_response(code=50002, message="清空失败", status_code=500)
