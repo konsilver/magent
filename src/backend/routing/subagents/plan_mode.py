@@ -399,12 +399,23 @@ async def astream_execute_plan(
         "similar_tasks": plan_retrieved_memory.get("similar_tasks", []),
     }
 
-    warmup_result = await _run_warmup(
-        user_input=plan_dict["task_input"],
-        user_id=user_id,
-        model_name=_role_model("warmup", model_name),
-        retrieved_memory=warmup_memory,
-        board=board,
+    steps = [_StepProxy(s) for s in plan_dict["steps"]]
+
+    # Warmup 与第一步记忆检索并行执行，节省一次 Milvus 查询等待
+    _step0_desc = steps[0].description or steps[0].title if steps else ""
+
+    async def _empty_memory() -> Dict:
+        return {"relevant_patterns": []}
+
+    warmup_result, _prefetched_step0_memory = await asyncio.gather(
+        _run_warmup(
+            user_input=plan_dict["task_input"],
+            user_id=user_id,
+            model_name=_role_model("warmup", model_name),
+            retrieved_memory=warmup_memory,
+            board=board,
+        ),
+        _retrieve_step_memory(user_id, _step0_desc) if _step0_desc else _empty_memory(),
     )
 
     if warmup_result is None:
@@ -427,9 +438,11 @@ async def astream_execute_plan(
     local_replan_count = 0
     global_reset_count = 0
 
+    # 下一步记忆预取任务（在当前步执行期间异步跑）
+    _prefetch_memory_task: Optional[asyncio.Task] = None
+
     try:
         step_idx = 0
-        steps = [_StepProxy(s) for s in plan_dict["steps"]]
 
         while step_idx < len(steps):
             step = steps[step_idx]
@@ -458,14 +471,30 @@ async def astream_execute_plan(
             yield {"type": "heartbeat"}
             _update_stored_step(plan_id, step.step_id, status="running", started_at=datetime.utcnow().isoformat())
 
+            # ── 消费预取的记忆（step 0 来自 Warmup 并行，其余来自上一步预取任务）────
+            if step_idx == 0:
+                step_memory = _prefetched_step0_memory
+            elif _prefetch_memory_task is not None:
+                step_memory = await _prefetch_memory_task
+                _prefetch_memory_task = None
+            else:
+                step_memory = await _retrieve_step_memory(user_id, step.description or step.title)
+
             yield {
                 "type": "plan_step_agent_activity",
                 "step_id": step.step_id,
                 "activity": "memory_query",
                 "label": "SubAgent 查询历史经验",
             }
-            step_memory = await _retrieve_step_memory(user_id, step.description or step.title)
+
             next_step = steps[step_idx + 1] if step_idx + 1 < len(steps) else None
+
+            # ── 预取下一步记忆（与当前 SubAgent 执行并行）──────────────────────────
+            if next_step is not None and _prefetch_memory_task is None:
+                _next_desc = next_step.description or next_step.title
+                _prefetch_memory_task = asyncio.ensure_future(
+                    _retrieve_step_memory(user_id, _next_desc)
+                )
 
             # ── REDO loop ──────────────────────────────────────────────────────
             redo_count = 0
@@ -784,6 +813,10 @@ async def astream_execute_plan(
                                         "tool_use_trace": [],
                                     })
                             board["plan"]["steps"] = new_board_steps
+                            # REPLAN 重建了步骤列表，旧预取任务已过期，取消并清空
+                            if _prefetch_memory_task is not None and not _prefetch_memory_task.done():
+                                _prefetch_memory_task.cancel()
+                            _prefetch_memory_task = None
                             _update_stored_step(plan_id, steps[step_idx].step_id, status="running", started_at=datetime.utcnow().isoformat())
                             _replan_reason = "; ".join(
                                 r.get("suggestion", "") or r.get("description", "")
@@ -993,6 +1026,8 @@ async def astream_execute_plan(
         yield {"type": "plan_error", "plan_id": plan_id, "error": str(exc)}
 
     finally:
+        if _prefetch_memory_task is not None and not _prefetch_memory_task.done():
+            _prefetch_memory_task.cancel()
         _terminate_mcp_processes(_all_mcp_clients)
         _all_mcp_clients.clear()
         try:
