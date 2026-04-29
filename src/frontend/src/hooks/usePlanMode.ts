@@ -499,8 +499,8 @@ export async function sendPlanMode(
                   progressText += String(evt.delta || '');
                   appendAssistant(progressText, true);
                 } else if (evt.type === 'plan_generated') {
+                  // 保存事件，继续读完 SSE 流（等待 [DONE]），避免提前 break 导致渲染时序问题
                   planEvt = evt;
-                  break outer;
                 } else if (evt.type === 'plan_error') {
                   errorEvt = evt;
                   break outer;

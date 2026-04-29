@@ -317,7 +317,9 @@ async def _run_subagent_step(
                 tool_names = [tc.get("name", "?") for tc in step_tool_calls[:5]]
                 logger.info("[SubAgent] step=%d tools used: %s", step.step_order, tool_names)
 
-            yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": step_text}
+            # 只向前端发送 narrative 部分，JSON 块留给后续约束传递，不展示给用户
+            _narrative_for_display, _ = _extract_next_step_instruction(step_text)
+            yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": _narrative_for_display or step_text}
 
         except asyncio.TimeoutError:
             logger.warning("[SubAgent] step=%d(%s) TIMEOUT", step.step_order, step.title)
