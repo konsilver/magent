@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Select, message } from 'antd';
+import { Modal, Select, message, Button, Popconfirm } from 'antd';
+import { DeleteOutlined } from '@ant-design/icons';
 import {
   SCROLL_TO_BOTTOM_BTN_THRESHOLD,
   distanceFromBottom,
@@ -7,6 +8,7 @@ import {
 } from '../../utils/scroll';
 import { useChatStore } from '../../stores';
 import { useAgentStore } from '../../stores/agentStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { MessageBubble } from './MessageBubble';
 import { InputArea } from './InputArea';
 
@@ -130,6 +132,7 @@ export function ChatArea({
       : '请输入你的问题，按Enter发送，Shift+Enter换行';
 
   const hasNoMessages = !chat || chat.messages.length === 0;
+  const { clearUserProfileMemories } = useSettingsStore();
 
   // Show a spinner when:
   // 1. The session list is still being fetched (initial page load), OR
@@ -190,6 +193,27 @@ export function ChatArea({
             </div>
           )}
 
+          {!isAgentChat && (
+            <div className="jx-clearMemoryRow">
+              <Popconfirm
+                title="清空用户特征记忆"
+                description="确定要清空所有用户特征记忆吗？此操作不可撤销。"
+                onConfirm={() => { void clearUserProfileMemories(); }}
+                okText="确定"
+                cancelText="取消"
+              >
+                <Button
+                  icon={<DeleteOutlined />}
+                  size="small"
+                  danger
+                  type="text"
+                  className="jx-clearMemoryBtn"
+                >
+                  清空记忆
+                </Button>
+              </Popconfirm>
+            </div>
+          )}
 
         </div>
         {!isAgentChat && (

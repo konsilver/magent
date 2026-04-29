@@ -981,6 +981,19 @@ a.jx-fileCard--link:hover{
   100%{ opacity:0; transform:translateX(-50%) translateY(-2px); }
 }
 
+/* Clear memory button row */
+.jx-clearMemoryRow{
+  display:flex; justify-content:center; margin-top:16px;
+}
+.jx-clearMemoryBtn{
+  color:rgba(15,23,42,.4) !important;
+  border:none;
+}
+.jx-clearMemoryBtn:hover{
+  color:#ff4d4f !important;
+  background:rgba(255,77,79,.06) !important;
+}
+
 /* AI Disclaimer — at page bottom */
 .jx-aiDisclaimer{
   font-size:12px; color:rgba(15,23,42,.35);

@@ -92,7 +92,7 @@ async def _retrieve_plan_memory(user_id: str, task_description: str) -> Dict[str
         from core.llm.memory import retrieve_memories
         import re as _re
         # Step 1: KV 检索 top-8
-        raw = await retrieve_memories(user_id, task_description, limit=8, min_score=0.4)
+        raw = await retrieve_memories(user_id, task_description, limit=8, min_score=0.55)
         if not raw:
             return {"similar_tasks": [], "failure_patterns": [], "graph_plans": []}
 
@@ -145,7 +145,7 @@ async def _retrieve_step_memory(user_id: str, step_description: str) -> Dict[str
         return {"relevant_patterns": []}
     try:
         from core.llm.memory import retrieve_memories
-        raw = await retrieve_memories(user_id, step_description, limit=4, min_score=0.45)
+        raw = await retrieve_memories(user_id, step_description, limit=4, min_score=0.60)
         if not raw:
             return {"relevant_patterns": []}
 

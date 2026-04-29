@@ -416,7 +416,8 @@ def _parse_json_output(text: str) -> Optional[Dict[str, Any]]:
 def _extract_summary(text: str, max_len: int = 200) -> str:
     if not text:
         return "已完成"
-    lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
+    _noise = {"---", "***", "___", "```", "---\n"}
+    lines = [l.strip() for l in text.strip().split("\n") if l.strip() and l.strip() not in _noise and not l.strip().startswith("```")]
     if not lines:
         return "已完成"
     summary = lines[-1]
