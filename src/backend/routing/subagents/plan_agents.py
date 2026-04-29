@@ -163,6 +163,11 @@ _PLANNER_PROMPT_TEMPLATE = """你是 Planner Agent，负责将用户任务拆解
 ## 用户特征（来自 context 黑板）
 {user_context}
 
+【重要】优先级规则：
+- context.user 字段（用户实时特征）的优先级**高于**历史记忆中任何 suggestion（包括计划建议和子任务建议）
+- 若 context.user 内部存在多条相互冲突的条目，以**时间戳最新**的条目为准
+- 历史记忆仅作参考，不得覆盖或替代 context.user 中的用户特征
+
 ## 历史记忆参考
 {memory_context}
 
@@ -600,6 +605,9 @@ _SUMMARY_PROMPT_TEMPLATE = """你是 Summary Agent，负责将多步骤计划的
 ## 最后一步的详细输出（参考）
 {last_step_output}
 
+## 任务类型
+{task_complexity_hint}
+
 ## 你的任务
 根据用户的原始目标和各步骤的执行结果，生成一份完整、自然的最终回答。
 
@@ -608,10 +616,10 @@ _SUMMARY_PROMPT_TEMPLATE = """你是 Summary Agent，负责将多步骤计划的
 - 语言自然流畅，像一个助手在直接回答用户
 - 内容完整，包含各步骤中所有关键信息的整合
 - 如果步骤间有关联，适当串联逻辑
-- 使用 Markdown 格式排版（标题、列表等），让内容清晰易读
+- {format_instruction}
 - 不要在回答末尾附加 JSON 块或其他结构化数据
 
-请直接输出最终回答（纯 Markdown 文本，无需 JSON 包装）："""
+请直接输出最终回答："""
 
 
 async def _run_summary(
@@ -625,10 +633,21 @@ async def _run_summary(
     logger.info("[Summary] START user=%s steps=%d last_output_chars=%d",
                 user_id, len(step_summaries), len(last_step_output))
     summaries_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(step_summaries)) or "（无步骤摘要）"
+
+    task_complexity = board.get("check", {}).get("task_complexity", "complex")
+    if task_complexity == "simple":
+        task_complexity_hint = "简单信息类任务（确认、记录、推荐等）"
+        format_instruction = "使用自然语言纯文本回答，不要使用 Markdown 标题、加粗或列表等格式标记"
+    else:
+        task_complexity_hint = "复杂执行类任务（数据分析、多步计算、报告生成等）"
+        format_instruction = "可使用 Markdown 格式排版（标题、列表等），让内容清晰易读"
+
     prompt = _SUMMARY_PROMPT_TEMPLATE.format(
         user_goal=board["plan"].get("user_goal", ""),
         step_summaries=summaries_text,
         last_step_output=last_step_output[:3000],
+        task_complexity_hint=task_complexity_hint,
+        format_instruction=format_instruction,
     )
     try:
         text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="Summary")

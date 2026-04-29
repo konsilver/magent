@@ -59,7 +59,8 @@ def _build_subagent_instruction(
     parts.append(f"""## 执行要求
 1. 聚焦当前步骤目标，不执行其他步骤的任务
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
-3. 完成执行后，**必须**在输出末尾附加 JSON 块，格式如下：
+3. 【重要】优先级规则：context.user 字段（用户实时特征）的优先级**高于**历史记忆中任何 suggestion（包括计划建议和子任务建议）；若 context.user 内部存在冲突条目，以**时间戳最新**的条目为准
+4. 完成执行后，**必须**在输出末尾附加 JSON 块，格式如下：
 
 ```json
 {{
