@@ -350,6 +350,32 @@ def _save_user_profile_background(user_id: str, profile_update: Dict, model_name
             user_msg = "用户特征更新"
             assistant_msg = f"用户特征（合并后）：\n{facts_text}"
             await save_conversation(user_id, user_msg, assistant_msg, metadata=_USER_PROFILE_METADATA)
+
+            # mem0 的 add() 不保证 metadata 透传到 Milvus scalar 字段，
+            # 写入后立刻查找最新条目并调用 update() 补打 metadata 标签。
+            try:
+                from core.llm.memory import get_all_memories, _get_memory
+                import asyncio as _asyncio
+                all_items = await get_all_memories(user_id)
+                untagged = [
+                    item for item in all_items
+                    if not (item.get("metadata") or {}).get("type")
+                    and "用户特征" in (item.get("memory") or "")
+                ]
+                if untagged:
+                    mem_client = _get_memory()
+                    loop = _asyncio.get_running_loop()
+                    for item in untagged:
+                        mid = item.get("id")
+                        if mid:
+                            await loop.run_in_executor(
+                                None,
+                                lambda _id=mid: mem_client.update(_id, item.get("memory", ""), metadata=_USER_PROFILE_METADATA)
+                            )
+                    logger.info("[Memory] user profile metadata patched for %d entries", len(untagged))
+            except Exception as patch_exc:
+                logger.debug("[Memory] metadata patch failed (non-critical): %s", patch_exc)
+
             logger.info("[Memory] user profile merged & saved for user=%s, facts=%d", user_id, len(facts))
         except Exception as exc:
             logger.debug("[Memory] user profile save failed (non-critical): %s", exc)

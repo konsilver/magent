@@ -625,10 +625,20 @@ async def delete_all_memories(user_id: str) -> bool:
 
 
 async def delete_memories_by_type(user_id: str, memory_type: str) -> bool:
-    """清空用户指定类型的记忆（按 metadata.type 过滤后逐条删除）。"""
+    """清空用户指定类型的记忆（按 metadata.type 过滤后逐条删除）。
+
+    mem0 的 metadata scalar filter 可能不透传，降级为全量获取后应用层过滤。
+    """
     if not MEM0_ENABLED or not user_id:
         return False
     items = await get_memories_by_metadata(user_id, {"type": memory_type})
+    if not items:
+        # mem0 metadata filter 不可靠，降级为全量扫描 + 应用层过滤
+        all_items = await get_all_memories(user_id)
+        items = [
+            item for item in all_items
+            if (item.get("metadata") or {}).get("type") == memory_type
+        ]
     if not items:
         return True
     results = await asyncio.gather(
