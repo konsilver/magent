@@ -583,3 +583,57 @@ async def _run_qa_final(
     except Exception as exc:
         logger.warning("[QA-final] failed: %s", exc)
     return {"plan_suggestion": ""}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Summary Agent
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SUMMARY_PROMPT_TEMPLATE = """你是 Summary Agent，负责将多步骤计划的执行结果整合成一份清晰、面向用户的最终回答。
+
+## 用户的原始目标
+{user_goal}
+
+## 各步骤执行摘要
+{step_summaries}
+
+## 最后一步的详细输出（参考）
+{last_step_output}
+
+## 你的任务
+根据用户的原始目标和各步骤的执行结果，生成一份完整、自然的最终回答。
+
+要求：
+- 直接回答用户的问题，不要提及"步骤"、"计划"、"agent"等系统内部概念
+- 语言自然流畅，像一个助手在直接回答用户
+- 内容完整，包含各步骤中所有关键信息的整合
+- 如果步骤间有关联，适当串联逻辑
+- 使用 Markdown 格式排版（标题、列表等），让内容清晰易读
+- 不要在回答末尾附加 JSON 块或其他结构化数据
+
+请直接输出最终回答（纯 Markdown 文本，无需 JSON 包装）："""
+
+
+async def _run_summary(
+    board: Dict[str, Any],
+    step_summaries: List[str],
+    last_step_output: str,
+    model_name: str,
+    user_id: str,
+) -> str:
+    """Generate a user-facing summary of all plan steps. Returns markdown text."""
+    logger.info("[Summary] START user=%s steps=%d last_output_chars=%d",
+                user_id, len(step_summaries), len(last_step_output))
+    summaries_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(step_summaries)) or "（无步骤摘要）"
+    prompt = _SUMMARY_PROMPT_TEMPLATE.format(
+        user_goal=board["plan"].get("user_goal", ""),
+        step_summaries=summaries_text,
+        last_step_output=last_step_output[:3000],
+    )
+    try:
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="Summary")
+        logger.info("[Summary] DONE output_chars=%d", len(text))
+        return text.strip()
+    except Exception as exc:
+        logger.warning("[Summary] failed, falling back to last step output: %s", exc)
+        return last_step_output

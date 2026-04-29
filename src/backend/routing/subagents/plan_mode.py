@@ -70,6 +70,7 @@ from routing.subagents.plan_agents import (
     _run_warmup,
     _run_qa,
     _run_qa_final,
+    _run_summary,
 )
 
 # ── Step execution helpers ────────────────────────────────────────────────────
@@ -887,7 +888,16 @@ async def astream_execute_plan(
             final_status = "cancelled"
 
         overall_summary = f"共 {len(steps)} 个步骤，完成 {completed_count} 个"
-        result_text = last_step_text
+
+        # 调用 Summary Agent 将所有步骤结果整合为面向用户的可读回答
+        yield {"type": "plan_step_progress", "step_id": None, "delta": "正在整合结果...\n"}
+        result_text = await _run_summary(
+            board=board,
+            step_summaries=step_summaries,
+            last_step_output=last_step_text,
+            model_name=_role_model("qa", model_name),
+            user_id=user_id,
+        )
 
         qa_final = await _run_qa_final(
             board=board,

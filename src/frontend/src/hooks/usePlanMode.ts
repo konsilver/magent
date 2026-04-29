@@ -233,7 +233,7 @@ export async function sendPlanMode(
 
     updatePlanCard(true);
 
-    while (true) {
+    execOuter: while (true) {
       const { done, value } = await execReader.read();
       if (done) break;
       execBuf += decoder.decode(value, { stream: true });
@@ -244,7 +244,7 @@ export async function sendPlanMode(
           const trimmed = line.trim();
           if (!trimmed.startsWith('data:')) continue;
           const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') break;
+          if (data === '[DONE]') break execOuter;
           try {
             const evt = JSON.parse(data);
             const stepId = evt.step_id as string | undefined;
