@@ -7,6 +7,7 @@
 ## 非计划模式
 
 ​	普通模式，无定制subagent，无特殊agent处理链路（但仍然保留摘要总结、分类等基本功能），专门用于快速回答用户问题（优化体验），且MCP tools和skills与计划模式下共享。
+    为增添用户特征相关逻辑，在用户输入内容后，像user-profile-agent那样提取记忆+合并用户特征部分记忆（然后开一个异步线程写入记忆），之后将合并的用户特征放入LLM的prompt中
 
 ## 计划模式
     整个多智能系统有一个context黑板，所有agent可读写（除部分特殊内容仅QA可见，具体见data_structure/context.md）

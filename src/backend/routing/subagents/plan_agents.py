@@ -152,6 +152,48 @@ async def _run_user_profile_agent(
         logger.warning("[UserProfileAgent] failed (non-critical): %s", exc)
 
 
+async def extract_user_profile(
+    user_id: str,
+    user_input: str,
+    model_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Extract user characteristics for the given input and persist them.
+
+    Returns {"urgent": str|None, "mem": str|None}, or None on failure.
+    Fires off background memory merge/save as a side effect.
+    Used by both plan mode and normal chat mode.
+    """
+    from routing.subagents.plan_memory import _save_user_profile_background
+    memory_context = "（记忆系统未启用或暂无相关记录）"
+    if _mem0_enabled() and user_id:
+        try:
+            from core.llm.memory import retrieve_memories
+            raw = await retrieve_memories(user_id, user_input, limit=4, min_score=0.4)
+            if raw:
+                memory_context = raw
+        except Exception as exc:
+            logger.debug("[UserProfile] memory retrieval failed: %s", exc)
+
+    prompt = _USER_PROFILE_PROMPT_TEMPLATE.format(
+        user_input=user_input,
+        memory_context=memory_context,
+    )
+    logger.info("[UserProfile] extracting profile user=%s input_chars=%d", user_id, len(user_input))
+    try:
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=30, _agent_label="UserProfile")
+        data = _parse_json_output(text)
+        if data:
+            logger.info("[UserProfile] done: urgent=%r mem_present=%s",
+                        str(data.get("urgent", ""))[:80], bool(data.get("mem")))
+            _save_user_profile_background(user_id, data, model_name=model_name)
+            return data
+        logger.warning("[UserProfile] JSON parse failed")
+        return None
+    except Exception as exc:
+        logger.warning("[UserProfile] failed (non-critical): %s", exc)
+        return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Planner Agent
 # ═══════════════════════════════════════════════════════════════════════════════

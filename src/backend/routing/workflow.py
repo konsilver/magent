@@ -644,6 +644,29 @@ async def astream_chat_workflow(
                 logger.warning("[workflow] 历史摘要失败，降级为裁剪: %s", exc)
                 session_messages = trimmed
 
+        # ── User profile extraction ───────────────────────────────
+        # Extract stable user characteristics from the current input and
+        # inject them into the agent's system prompt before the LLM call.
+        # Background memory merge/save fires off inside extract_user_profile.
+        try:
+            from routing.subagents.plan_agents import extract_user_profile
+            from routing.subagents.plan_store import _role_model as _get_role_model
+            _up_model = _get_role_model("user_profile", _stream_model_name)
+            _profile = await extract_user_profile(_stream_user_id, user_message, _up_model)
+            if _profile and (_profile.get("urgent") or _profile.get("mem")):
+                _urgent = _profile.get("urgent") or ""
+                _mem = _profile.get("mem") or ""
+                _profile_section = "\n\n## 用户特征\n"
+                if _urgent:
+                    _profile_section += f"- 即时特征：{_urgent}\n"
+                if _mem:
+                    _profile_section += f"- 历史特征：{_mem}\n"
+                agent.sys_prompt = agent.sys_prompt + _profile_section
+                logger.info("[workflow] user profile injected into sys_prompt (urgent=%s mem=%s)",
+                            bool(_urgent), bool(_mem))
+        except Exception as _up_exc:
+            logger.warning("[workflow] user profile extraction failed (non-critical): %s", _up_exc)
+
         streaming_agent = StreamingAgent(agent, mcp_clients)
 
         skill_load_ids: set = set()  # track tool_ids that are skill loads
