@@ -174,6 +174,76 @@ def _effective_main_available_skills() -> list[str]:
         return []
 
 
+async def _create_bare_llm_agent(
+    model_name: Optional[str],
+    current_user_id: Optional[str],
+) -> Tuple[ReActAgent, list]:
+    """Fast path for disable_tools=True isolated agents.
+
+    Skips all skill/MCP/prompt-build overhead — just resolves the model
+    and creates a minimal ReActAgent with an empty toolkit.
+    Used by plan-mode LLM helpers (Warmup, QA, Summary, etc.).
+    """
+    import logging
+    import time
+    _log = logging.getLogger(__name__)
+    _t0 = time.monotonic()
+
+    from core.config.model_config import ModelConfigService
+    from core.llm.context_manager import resolve_model_context_window
+
+    svc = ModelConfigService.get_instance()
+    role = model_name or "main_agent"
+    cfg = svc.resolve(role) or svc.resolve("main_agent")
+
+    if cfg:
+        model = make_chat_model(
+            model=cfg.model_name,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            timeout=cfg.timeout,
+            base_url=cfg.base_url,
+            api_key=cfg.api_key,
+            stream=False,
+        )
+        effective_model_name = cfg.model_name
+    else:
+        model = get_default_model(stream=False)
+        effective_model_name = model_name or ""
+
+    ctx_window = resolve_model_context_window(effective_model_name)
+    compression_config = ReActAgent.CompressionConfig(
+        enable=True,
+        agent_token_counter=CharTokenCounter(),
+        trigger_threshold=int(ctx_window * 0.75),
+        keep_recent=6,
+        compression_prompt=(
+            "<system-hint>你一直在处理上述任务但尚未完成。"
+            "请生成一份续写摘要，使你能在新的上下文窗口中高效恢复工作。"
+            "对话历史将被替换为此摘要。"
+            "摘要应结构化、简洁且可操作，使用中文输出。"
+            "</system-hint>"
+        ),
+    )
+
+    agent = ReActAgent(
+        name="llm_agent",
+        sys_prompt="你是一个专注的助手，请严格按照用户要求完成任务。",
+        model=model,
+        formatter=OpenAIChatFormatter(),
+        toolkit=Toolkit(),
+        memory=InMemoryMemory(),
+        compression_config=compression_config,
+        max_iters=1,
+        parallel_tool_calls=False,
+    )
+    agent._disable_console_output = True
+    agent._jx_context = ModelContext()  # type: ignore[attr-defined]
+
+    _log.info("[factory-bare] +%.0fms bare agent created (model=%s)", (time.monotonic() - _t0) * 1000, effective_model_name)
+    return agent, []
+
+
 async def create_agent_executor(
     agent_spec: Optional[AgentSpec] = None,
     user_query: Optional[str] = None,
@@ -207,6 +277,11 @@ async def create_agent_executor(
         return f"{(time.monotonic() - _t0)*1000:.0f}ms"
 
     import asyncio
+
+    # Fast path: tool-disabled isolated agents (plan-mode LLM helpers) skip
+    # all skill/MCP/prompt-build overhead and go straight to a bare agent.
+    if disable_tools and isolated and user_agent is None and agent_spec is None:
+        return await _create_bare_llm_agent(model_name, current_user_id)
 
     cfg = load_prompt_config()
     _log.info("[factory] +%s config loaded", _elapsed())

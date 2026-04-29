@@ -493,7 +493,7 @@ Step 4: 检查 local_constraint 中 priority=soft 的部分，使用 LLM judge
 - **简单任务**：confidence < 0.4 视为失败 → REDO（宽松）
 - **复杂任务**：confidence < 0.6 视为失败 → REDO（严格）
 
-Step 5: 对 context 中 user 和 plan 整体进行 LLM judge，判断是否偏离整体目标
+Step 5: 对 context 中 user 和 plan 字段整体进行 LLM judge，判断是否偏离整体任务目标
 - **简单任务**：confidence < 0.6 → REPLAN（宽松）
 - **复杂任务**：confidence < 0.8 → REPLAN（严格）
 
