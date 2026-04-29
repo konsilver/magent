@@ -661,7 +661,11 @@ async def astream_chat_workflow(
                     _profile_section += f"- 即时特征：{_urgent}\n"
                 if _mem:
                     _profile_section += f"- 历史特征：{_mem}\n"
-                agent.sys_prompt = agent.sys_prompt + _profile_section
+                _new_sys = agent.sys_prompt + _profile_section
+                try:
+                    agent.sys_prompt = _new_sys
+                except AttributeError:
+                    object.__setattr__(agent, "_sys_prompt", _new_sys)
                 logger.info("[workflow] user profile injected into sys_prompt (urgent=%s mem=%s)",
                             bool(_urgent), bool(_mem))
         except Exception as _up_exc:
