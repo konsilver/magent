@@ -32,10 +32,13 @@
 
         planner与user_profile agent并发执行，首先调用LLM从用户输入中提取任务描述，之后在memory的KV中查询相关结构取top-k，然后根据这k个方案的plan_id（在KV中存储）在Graph中查找其具体信息（骨架+节点+优化建议），把这些和context打包发给LLM，让其制定计划。
 
+        为了保证前端页面响应的即时性，planner线程产生结果后，如果user_profile线程没有完成，则等待其7秒，如果还没完成则直接在前端显示计划方案，让user_profile线程后台运转
+
         上述为第一阶段（此阶段的结束不需要等待user_profile agent写memory线程结束），在用户给出回应前，不进入下一阶段，agent不需要运作。
 
     第二阶段：
     当用户给出反应后，调用LLM识别用户是想说“计划确认执行”还是“计划需要重新规划，我的建议是...”
+        注意下面的逻辑运转前，保证user_profile线程结束再继续。否则context的user字段会不完整
         如果是确认执行，首先调用warmup agent的LLM结合context渲染任务目标，并构造全局约束和第一个subagent的子任务约束。
         然后是每个子任务的执行，每个子任务都要先在记忆中查询相似任务的解决方案(取top-k)，然后调用对应的subagent的LLM，在遵循约束的前提下完成任务。
         每个subagent完成任务后，QA对其进行检查，决定是否PASS（下一个subagent继续做） | REDO（当前agent重做） | REPLAN

@@ -146,13 +146,31 @@ async def astream_generate_plan(
     if not (user_reply and previous_plan_id):
         yield {"type": "plan_generating", "delta": "正在分析用户特征并查询历史记忆...\n"}
 
-    logger.info("[Phase1] user=%s: launching UserProfileAgent + retrieve_plan_memory in parallel", user_id)
+    logger.info("[Phase1] user=%s: launching UserProfileAgent + retrieve_plan_memory + Planner in parallel", user_id)
     _phase1_t0 = _time.monotonic()
-    retrieved_memory, _ = await asyncio.gather(
-        _retrieve_plan_memory(user_id, task_description),
-        _run_user_profile_agent(user_id, task_description, _role_model("user_profile", model_name), board),
+
+    # Planner、UserProfile、memory 三者并发启动
+    # planner 不依赖 user_profile 结果，board 中 user 字段可能为空（planner 有 fallback）
+    # 三个任务并发后，等待 memory + user_profile 完成（planner 可能先完成也可能后完成）
+    user_profile_task = asyncio.create_task(
+        _run_user_profile_agent(user_id, task_description, _role_model("user_profile", model_name), board)
     )
-    logger.info("[Phase1] parallel gather done in %.0fms: similar_tasks=%d graph_plans=%d",
+    memory_task = asyncio.create_task(
+        _retrieve_plan_memory(user_id, task_description)
+    )
+
+    # 等待 memory 完成（planner 需要 retrieved_memory），同时发送心跳保持 SSE 连接
+    while not memory_task.done():
+        yield {"type": "heartbeat"}
+        await asyncio.sleep(2)
+
+    try:
+        retrieved_memory = await memory_task
+    except Exception as _mem_exc:
+        logger.warning("[Phase1] memory retrieval failed (non-critical): %s", _mem_exc)
+        retrieved_memory = {}
+
+    logger.info("[Phase1] memory done in %.0fms: similar_tasks=%d graph_plans=%d",
                 (_time.monotonic() - _phase1_t0) * 1000,
                 len(retrieved_memory.get("similar_tasks", [])),
                 len(retrieved_memory.get("graph_plans", [])))
@@ -161,14 +179,41 @@ async def astream_generate_plan(
     logger.info("[Phase1] calling Planner for user=%s", user_id)
 
     try:
-        plan_data = await _run_planner(
-            user_input=task_description,
-            user_id=user_id,
-            model_name=_role_model("plan", model_name),
-            tools_desc=tools_desc,
-            retrieved_memory=retrieved_memory,
-            board=board,
+        # 启动 planner（与 user_profile_task 并发运行）
+        planner_task = asyncio.create_task(
+            _run_planner(
+                user_input=task_description,
+                user_id=user_id,
+                model_name=_role_model("plan", model_name),
+                tools_desc=tools_desc,
+                retrieved_memory=retrieved_memory,
+                board=board,
+            )
         )
+
+        # 等待 planner 完成，期间发送心跳
+        while not planner_task.done():
+            yield {"type": "heartbeat"}
+            await asyncio.sleep(2)
+
+        plan_data = await planner_task
+
+        # planner 完成后，等待 user_profile 最多7秒（非关键路径，失败不影响主流程）
+        if not user_profile_task.done():
+            logger.info("[Phase1] Planner done, waiting up to 7s for UserProfileAgent...")
+            try:
+                await asyncio.wait_for(asyncio.shield(user_profile_task), timeout=7.0)
+            except asyncio.TimeoutError:
+                logger.warning("[Phase1] UserProfileAgent did not finish in 7s, proceeding without user profile")
+            except Exception as _up_exc:
+                logger.warning("[Phase1] UserProfileAgent failed (non-critical): %s", _up_exc)
+        else:
+            try:
+                await user_profile_task
+            except Exception as _up_exc:
+                logger.warning("[Phase1] UserProfileAgent failed (non-critical): %s", _up_exc)
+
+        logger.info("[Phase1] Phase1 total %.0fms", (_time.monotonic() - _phase1_t0) * 1000)
 
         if not plan_data:
             yield {"type": "plan_error", "error": "Planner 输出格式解析失败，请重试"}
