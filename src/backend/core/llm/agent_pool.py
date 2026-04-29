@@ -44,7 +44,11 @@ class _PooledAgent:
         self.agent.memory = InMemoryMemory()
         self.agent._jx_context = ModelContext()  # type: ignore[attr-defined]
         now_str = datetime.now().isoformat(timespec="seconds")
-        self.agent.sys_prompt = self._base_system_prompt.replace("{now}", now_str)
+        _new_prompt = self._base_system_prompt.replace("{now}", now_str)
+        try:
+            self.agent.sys_prompt = _new_prompt
+        except AttributeError:
+            object.__setattr__(self.agent, "_sys_prompt", _new_prompt)
 
 
 class AgentPool:

@@ -3,6 +3,7 @@ import { generatePlanStream, updatePlanApi, executePlanStream, getPlanApi } from
 import { parseSpaceFileContent } from '../utils/fileParser';
 import { useChatStore, useCatalogStore, useFileStore } from '../stores';
 import type { ChatItem, ChatMessage, MessageSegment, ToolCall } from '../types';
+import type { AgentActivity, AgentActivityType } from '../components/chat/PlanCard';
 
 /** Helper: read SSE stream and collect events */
 export async function readPlanSse(response: Response): Promise<Array<Record<string, unknown>>> {
@@ -174,7 +175,7 @@ export async function sendPlanMode(
     const execReader = execResp.body?.getReader();
     if (!execReader) throw new Error('No response body');
     let execBuf = '';
-    const stepResults: Record<string, { status: string; summary: string; text: string; title: string; order: number; step_id: string; replaced?: boolean; is_replan_new?: boolean; replan_reason?: string }> = {};
+    const stepResults: Record<string, { status: string; summary: string; text: string; title: string; order: number; step_id: string; replaced?: boolean; is_replan_new?: boolean; replan_reason?: string; agentActivities?: AgentActivity[] }> = {};
     const toolCalls: ToolCall[] = [];
     let planTitle = '';
     let planDesc = '';
@@ -203,6 +204,7 @@ export async function sendPlanMode(
           status: (r?.status || 'pending') as any,
           summary: r?.summary || '',
           text: r?.text || '',
+          agentActivities: r?.agentActivities,
           replaced: r?.replaced,
           is_replan_new: r?.is_replan_new,
           replan_reason: r?.replan_reason,
@@ -248,19 +250,42 @@ export async function sendPlanMode(
             const stepId = evt.step_id as string | undefined;
             switch (evt.type) {
               case 'plan_step_start':
-                if (stepId) stepResults[stepId] = { status: 'running', summary: '', text: '', title: evt.title || '', order: evt.step_order || 0, step_id: stepId };
+                if (stepId) stepResults[stepId] = { status: 'running', summary: '', text: '', title: evt.title || '', order: evt.step_order || 0, step_id: stepId, agentActivities: [] };
                 updatePlanCard(true);
                 break;
-              case 'plan_step_progress':
-                if (stepId && stepResults[stepId]) { stepResults[stepId].text += evt.delta || ''; updatePlanCard(true); }
-                break;
-              case 'plan_step_qa':
-                // Show redo_failed status temporarily when QA returns REDO_STEP
-                if (stepId && stepResults[stepId] && evt.verdict === 'REDO_STEP') {
-                  stepResults[stepId].status = 'redo_failed';
+              case 'plan_step_agent_activity': {
+                if (stepId && stepResults[stepId]) {
+                  const acts = stepResults[stepId].agentActivities || [];
+                  const actType = evt.activity as AgentActivityType;
+                  const actLabel = String(evt.label || '');
+                  // Mark the previous running activity as done
+                  const prevRunning = acts.findIndex(a => a.status === 'running');
+                  if (prevRunning >= 0) acts[prevRunning] = { ...acts[prevRunning], status: 'done' };
+                  // Push the new activity as running
+                  acts.push({ activity: actType, label: actLabel, status: 'running' });
+                  stepResults[stepId].agentActivities = acts;
                   updatePlanCard(true);
                 }
                 break;
+              }
+              case 'plan_step_progress':
+                if (stepId && stepResults[stepId]) { stepResults[stepId].text += evt.delta || ''; updatePlanCard(true); }
+                break;
+              case 'plan_step_qa': {
+                if (stepId && stepResults[stepId]) {
+                  // Mark the running qa_checking activity as done
+                  const acts = stepResults[stepId].agentActivities || [];
+                  const qaIdx = acts.findIndex(a => a.status === 'running');
+                  if (qaIdx >= 0) acts[qaIdx] = { ...acts[qaIdx], status: 'done' };
+                  stepResults[stepId].agentActivities = acts;
+                  // Show redo_failed status temporarily when QA returns REDO_STEP
+                  if (evt.verdict === 'REDO_STEP' || evt.verdict === 'REDO') {
+                    stepResults[stepId].status = 'redo_failed';
+                  }
+                  updatePlanCard(true);
+                }
+                break;
+              }
               case 'plan_replan': {
                 // Local replan: mark old steps as replaced, new steps as replan_new
                 const replacedFrom: number = evt.replaced_from_order || 0;
@@ -345,6 +370,7 @@ export async function sendPlanMode(
                   stepResults[stepId].status = evt.status || 'success';
                   stepResults[stepId].summary = evt.summary || '';
                   stepResults[stepId].text = '';
+                  stepResults[stepId].agentActivities = undefined;
                   updatePlanCard(true);
                 }
                 break;

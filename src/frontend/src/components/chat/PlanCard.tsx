@@ -4,11 +4,20 @@ import {
   RightOutlined, DownOutlined,
   ToolOutlined, AppstoreOutlined, SafetyCertificateOutlined,
   ThunderboltOutlined, OrderedListOutlined, RobotOutlined,
+  DatabaseOutlined, SafetyOutlined, BranchesOutlined,
 } from '@ant-design/icons';
 
 /* ───────────────────────────────────────────
    Plan Card — structured plan rendering
    ─────────────────────────────────────────── */
+
+export type AgentActivityType = 'memory_query' | 'subagent_executing' | 'qa_checking' | 'planner_replanning';
+
+export interface AgentActivity {
+  activity: AgentActivityType;
+  label: string;
+  status: 'running' | 'done';
+}
 
 export interface PlanStepData {
   step_order: number;
@@ -22,6 +31,7 @@ export interface PlanStepData {
   status?: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'redo_failed';
   summary?: string;
   text?: string;          // live progress text during execution
+  agentActivities?: AgentActivity[];  // live agent activity timeline during execution
   // REPLAN display fields
   replaced?: boolean;     // step was replaced by replan (show strikethrough)
   is_replan_new?: boolean; // this is a newly inserted replan step
@@ -49,6 +59,37 @@ export interface PlanCardProps {
   className?: string;
   /** 默认步骤展开（preview 模式下） */
   defaultExpandSteps?: boolean;
+}
+
+/* ── Agent activity icon helper ── */
+function activityIcon(activity: AgentActivityType) {
+  switch (activity) {
+    case 'memory_query': return <DatabaseOutlined />;
+    case 'subagent_executing': return <RobotOutlined />;
+    case 'qa_checking': return <SafetyOutlined />;
+    case 'planner_replanning': return <BranchesOutlined />;
+  }
+}
+
+/* ── Agent activity timeline (shown inside running step) ── */
+function AgentActivityTimeline({ activities }: { activities: AgentActivity[] }) {
+  if (!activities || activities.length === 0) return null;
+  return (
+    <div className="jx-plan-activityTimeline">
+      {activities.map((act, i) => (
+        <div key={i} className={`jx-plan-activityItem jx-plan-activityItem--${act.status}`}>
+          <span className="jx-plan-activityIcon">
+            {act.status === 'running'
+              ? <LoadingOutlined spin />
+              : act.status === 'done'
+                ? <CheckCircleFilled className="jx-plan-activityDone" />
+                : activityIcon(act.activity)}
+          </span>
+          <span className="jx-plan-activityLabel">{act.label}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /* ── Status icon helper ── */
@@ -173,6 +214,11 @@ function PlanStepRow({ step, index, mode, agentNameMap, defaultExpanded }: { ste
       {/* Execution mode: REDO notification */}
       {mode !== 'preview' && isRedoFailed && (
         <div className="jx-plan-redoHint">QA 验证未通过，正在重试...</div>
+      )}
+
+      {/* Execution mode: agent activity timeline (running step only) */}
+      {mode !== 'preview' && isActive && step.agentActivities && step.agentActivities.length > 0 && (
+        <AgentActivityTimeline activities={step.agentActivities} />
       )}
 
       {/* Execution mode: summary or live progress */}

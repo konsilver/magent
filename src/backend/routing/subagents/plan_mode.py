@@ -412,6 +412,12 @@ async def astream_execute_plan(
             yield {"type": "heartbeat"}
             _update_stored_step(plan_id, step.step_id, status="running", started_at=datetime.utcnow().isoformat())
 
+            yield {
+                "type": "plan_step_agent_activity",
+                "step_id": step.step_id,
+                "activity": "memory_query",
+                "label": "SubAgent 查询历史经验",
+            }
             step_memory = await _retrieve_step_memory(user_id, step.description or step.title)
             next_step = steps[step_idx + 1] if step_idx + 1 < len(steps) else None
 
@@ -427,6 +433,12 @@ async def astream_execute_plan(
                 step_text = ""
                 step_tool_calls = []
 
+                yield {
+                    "type": "plan_step_agent_activity",
+                    "step_id": step.step_id,
+                    "activity": "subagent_executing",
+                    "label": "SubAgent 执行任务" if redo_count == 0 else f"SubAgent 重做任务（第 {redo_count} 次）",
+                }
                 async for event in _run_subagent_step(
                     step=step,
                     next_step=next_step,
@@ -454,6 +466,12 @@ async def astream_execute_plan(
 
                 narrative_text, subagent_json = _extract_next_step_instruction(step_text)
 
+                yield {
+                    "type": "plan_step_agent_activity",
+                    "step_id": step.step_id,
+                    "activity": "qa_checking",
+                    "label": "QA 进行检查",
+                }
                 qa_data = await _run_qa(
                     step=step,
                     result=narrative_text or step_text,
@@ -504,6 +522,13 @@ async def astream_execute_plan(
                 local_replan_count += 1
                 logger.warning("[plan-exec] REPLAN triggered at step %d (local_count=%d, global_reset=%d)",
                                step.step_order, local_replan_count, global_reset_count)
+
+                yield {
+                    "type": "plan_step_agent_activity",
+                    "step_id": step.step_id,
+                    "activity": "planner_replanning",
+                    "label": "Planner 重新规划中...",
+                }
 
                 if local_replan_count >= _MAX_LOCAL_REPLAN:
                     global_reset_count += 1

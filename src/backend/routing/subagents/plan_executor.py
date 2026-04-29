@@ -168,7 +168,12 @@ async def _run_subagent_step(
         _plan_ctx_section = _build_plan_context_prompt_section(
             board, step, len(board.get("plan", {}).get("steps", []))
         )
-        agent.sys_prompt = agent.sys_prompt + "\n\n" + _plan_ctx_section
+        _current_sys_prompt = agent.sys_prompt
+        try:
+            agent.sys_prompt = _current_sys_prompt + "\n\n" + _plan_ctx_section
+        except AttributeError:
+            # sys_prompt is read-only in some AgentScope versions; write backing field directly
+            object.__setattr__(agent, "_sys_prompt", _current_sys_prompt + "\n\n" + _plan_ctx_section)
 
         _orig_hook = agent._instance_pre_reply_hooks.get("dynamic_model")
         if _orig_hook:

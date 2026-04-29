@@ -463,3 +463,51 @@
   font-style:italic;
   line-height:1.55;
 }
+
+/* ── Agent activity timeline (inside running step) ── */
+.jx-plan-activityTimeline{
+  margin:6px 0 0 32px;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.jx-plan-activityItem{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  font-size:12px;
+  line-height:1.5;
+  transition:opacity .2s;
+}
+.jx-plan-activityItem--done{
+  opacity:.5;
+}
+.jx-plan-activityItem--running{
+  opacity:1;
+}
+.jx-plan-activityIcon{
+  flex-shrink:0;
+  font-size:12px;
+  width:16px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.jx-plan-activityItem--running .jx-plan-activityIcon{
+  color:var(--color-primary);
+}
+.jx-plan-activityItem--done .jx-plan-activityIcon{
+  color:var(--color-success);
+}
+.jx-plan-activityDone{
+  color:var(--color-success) !important;
+  font-size:12px;
+}
+.jx-plan-activityLabel{
+  color:var(--color-text-secondary);
+  font-size:12px;
+}
+.jx-plan-activityItem--running .jx-plan-activityLabel{
+  color:var(--color-primary);
+  font-weight:500;
+}
