@@ -165,7 +165,7 @@ def run_chat_workflow(
     enabled_mcp_ids = enabled_mcp_ids_from_context(context)
     _workflow_user_id = str(context.get("user_id", ""))
     _workflow_model_name = str(context.get("model_name", ""))
-    _workflow_mem_enabled = False  # Memory disabled
+    _workflow_mem_enabled = bool(context.get("memory_enabled", False))
     _reranker_enabled = bool(context.get("reranker_enabled", False))
 
     async def _run():
@@ -275,10 +275,10 @@ async def _astream_subagent_direct(
         _ = user_agent.system_prompt, user_agent.model_provider_id
         _ = user_agent.max_iters, user_agent.temperature, user_agent.max_tokens, user_agent.timeout
 
-    # ── [mem0] memory retrieval (disabled) ───
+    # ── [mem0] memory retrieval ───
     _mem0_user_id = str(context.get("user_id", ""))
-    _mem0_enabled = False  # Memory disabled
-    _mem0_write_enabled = False  # Memory disabled
+    _mem0_enabled = bool(context.get("memory_enabled", False))
+    _mem0_write_enabled = bool(context.get("memory_write_enabled", False))
     logger.info("[subagent] user_id=%s, agent_id=%s, memory_enabled=%s", _mem0_user_id, agent_id, _mem0_enabled)
 
     _memory_task = await launch_memory_retrieval(
@@ -534,10 +534,10 @@ async def astream_chat_workflow(
         session_messages.insert(-1, skill_msg)
         logger.info("[skill_inject] injected skill instructions for '%s'", context.get("skill_id"))
 
-    # ── [mem0] memory retrieval (disabled) ───
+    # ── [mem0] memory retrieval ───
     _mem0_user_id = str(context.get("user_id", ""))
-    _mem0_enabled = False  # Memory disabled
-    _mem0_write_enabled = False  # Memory disabled
+    _mem0_enabled = bool(context.get("memory_enabled", False))
+    _mem0_write_enabled = bool(context.get("memory_write_enabled", False))
     logger.info("[mem0] user_id=%s, memory_enabled=%s, memory_write_enabled=%s", _mem0_user_id, _mem0_enabled, _mem0_write_enabled)
 
     _memory_task = await launch_memory_retrieval(
