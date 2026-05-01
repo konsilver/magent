@@ -29,13 +29,7 @@
 
     第一阶段：
     用户输入目标后：
-        user_profile agent先调用LLM提取用户此次输入能作为用户特征的信息，然后根据其在memory中搜寻对应条目，取top-k，然后把这两个内容（用户输入体现的特征、memory提取的可能与话题有关的特征）填入context。在此之后开一个异步线程，调用LLM把两个内容合并后再写入memory
-
-        planner与user_profile agent并发执行，首先调用LLM从用户输入中提取任务描述，之后在memory的KV中查询相关结构取top-k，然后根据这k个方案的plan_id（在KV中存储）在Graph中查找其具体信息（骨架+节点+优化建议），把这些和context打包发给LLM，让其制定计划。
-
-        为了保证前端页面响应的即时性，planner线程产生结果后，如果user_profile线程没有完成，则等待其7秒，如果还没完成则直接在前端显示计划方案，让user_profile线程后台运转
-
-        上述为第一阶段（此阶段的结束不需要等待user_profile agent写memory线程结束），在用户给出回应前，不进入下一阶段，agent不需要运作。
+        user_profile agent+planner当前逻辑不变
 
     第二阶段：
     当用户给出反应后，调用LLM识别用户是想说“计划确认执行”还是“计划需要重新规划，我的建议是...”

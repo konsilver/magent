@@ -196,7 +196,7 @@ def _context_board_summary(board: Dict[str, Any]) -> str:
     Only exposes fields defined in data_structure/context.md — internal
     runtime fields (suggestion, tool_use_trace, _*) are intentionally excluded.
     """
-    _PUBLIC_STEP_KEYS = {"step_id", "brief_description", "description", "output"}
+    _PUBLIC_STEP_KEYS = {"step_id", "title", "brief_description", "description", "output"}
     steps = [
         {k: v for k, v in s.items() if k in _PUBLIC_STEP_KEYS}
         for s in board.get("plan", {}).get("steps", [])

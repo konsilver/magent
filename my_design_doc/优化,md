@@ -1,0 +1,3 @@
+1. user profile 提取任务在 agent pool acquire 之前就 create_task 并行启动，等 pool/agent 准备好后最多再等 1.5s（asyncio.wait_for + shield），超时则跳过注入但不影响 stream 开始。首字节延迟从 2-5s 降至最多 1.5s。
+
+2.get_default_model() 加 60s TTL 缓存，避免每次 plan mode 的 _call_llm_agent 都重复查 DB 创建模型实例

@@ -52,9 +52,20 @@ def _build_subagent_instruction(
     if any(p for p in patterns):
         parts.append("## 历史相似执行经验（参考）\n" + "\n".join(f"- {p}" for p in patterns if p))
 
-    next_step_desc = ""
     if next_step:
-        next_step_desc = f"\n下一步任务: {next_step.title} — {next_step.description or ''}"
+        _next_order = getattr(next_step, "step_order", "?")
+        _next_title = getattr(next_step, "title", "")
+        _next_desc = getattr(next_step, "description", "") or ""
+        parts.append(
+            f"## 下一步任务（你需要为它制定约束）\n"
+            f"**步骤 {_next_order}**：{_next_title}\n"
+            f"{_next_desc}\n\n"
+            f"请结合上述下一步的具体任务内容，在输出末尾的 JSON 中制定针对性的 next_step_instruction，"
+            f"不要写泛泛的约束描述。"
+        )
+        _next_constraint_hint = f"针对步骤{_next_order}（{_next_title}）的具体约束"
+    else:
+        _next_constraint_hint = "null（这是最后一步）"
 
     parts.append(f"""## 执行要求
 1. 聚焦当前步骤目标，不执行其他步骤的任务
@@ -67,7 +78,7 @@ def _build_subagent_instruction(
   "result": "当前步骤执行结果摘要",
   "next_step_instruction": {{
     "local_constraint": {{
-      "constraint": "对下一步的约束描述（考虑下一步任务: {next_step_desc}）",
+      "constraint": "{_next_constraint_hint}",
       "type": "format|logic|semantic",
       "check_method": "rule_match|schema_validation|constraint_check",
       "priority": "hard|soft"

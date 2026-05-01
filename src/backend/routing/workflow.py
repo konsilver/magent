@@ -568,6 +568,15 @@ async def astream_chat_workflow(
         _code_exec = bool(context.get("code_exec", False))
         _plan_chat = bool(context.get("plan_chat", False))
         _pool_slot = None
+
+        # 与 agent pool 并行提前启动 user profile 提取，节省串行等待时间
+        from routing.subagents.plan_agents import extract_user_profile
+        from routing.subagents.plan_store import _role_model as _get_role_model
+        _up_model = _get_role_model("user_profile", _stream_model_name)
+        _profile_task = asyncio.create_task(
+            extract_user_profile(_stream_user_id, user_message, _up_model)
+        )
+
         from core.llm.agent_pool import AgentPool as _AgentPool
         _agent_pool = _AgentPool.get_instance()
         _use_pool = _agent_pool.is_ready and not _code_exec
@@ -644,32 +653,35 @@ async def astream_chat_workflow(
                 logger.warning("[workflow] 历史摘要失败，降级为裁剪: %s", exc)
                 session_messages = trimmed
 
-        # ── User profile extraction ───────────────────────────────
-        # Extract stable user characteristics from the current input and
-        # inject them into the agent's system prompt before the LLM call.
-        # Background memory merge/save fires off inside extract_user_profile.
+        # ── User profile injection ────────────────────────────────
+        # _profile_task was started earlier in parallel with pool acquire.
+        # Wait at most 1.5s — if LLM hasn't responded yet, skip injection
+        # (stream starts immediately; profile memory save still runs in bg).
+        _profile = None
         try:
-            from routing.subagents.plan_agents import extract_user_profile
-            from routing.subagents.plan_store import _role_model as _get_role_model
-            _up_model = _get_role_model("user_profile", _stream_model_name)
-            _profile = await extract_user_profile(_stream_user_id, user_message, _up_model)
-            if _profile and (_profile.get("urgent") or _profile.get("mem")):
-                _urgent = _profile.get("urgent") or ""
-                _mem = _profile.get("mem") or ""
-                _profile_section = "\n\n## 用户特征\n"
-                if _urgent:
-                    _profile_section += f"- 即时特征：{_urgent}\n"
-                if _mem:
-                    _profile_section += f"- 历史特征：{_mem}\n"
-                _new_sys = agent.sys_prompt + _profile_section
-                try:
-                    agent.sys_prompt = _new_sys
-                except AttributeError:
-                    object.__setattr__(agent, "_sys_prompt", _new_sys)
-                logger.info("[workflow] user profile injected into sys_prompt (urgent=%s mem=%s)",
-                            bool(_urgent), bool(_mem))
+            _profile = await asyncio.wait_for(asyncio.shield(_profile_task), timeout=1.5)
+            logger.info("[workflow] user profile ready before stream (elapsed=%.0fms)",
+                        (_time.monotonic() - _wf_start) * 1000)
+        except asyncio.TimeoutError:
+            logger.info("[workflow] user profile not ready within 1.5s, starting stream without injection")
         except Exception as _up_exc:
             logger.warning("[workflow] user profile extraction failed (non-critical): %s", _up_exc)
+
+        if _profile and (_profile.get("urgent") or _profile.get("mem")):
+            _urgent = _profile.get("urgent") or ""
+            _mem = _profile.get("mem") or ""
+            _profile_section = "\n\n## 用户特征\n"
+            if _urgent:
+                _profile_section += f"- 即时特征：{_urgent}\n"
+            if _mem:
+                _profile_section += f"- 历史特征：{_mem}\n"
+            _new_sys = agent.sys_prompt + _profile_section
+            try:
+                agent.sys_prompt = _new_sys
+            except AttributeError:
+                object.__setattr__(agent, "_sys_prompt", _new_sys)
+            logger.info("[workflow] user profile injected into sys_prompt (urgent=%s mem=%s)",
+                        bool(_urgent), bool(_mem))
 
         streaming_agent = StreamingAgent(agent, mcp_clients)
 
@@ -816,6 +828,9 @@ async def astream_chat_workflow(
                     _pool_slot._lock.release()
                 except Exception:
                     pass
+            # Cancel background profile task if it's still running
+            if not _profile_task.done():
+                _profile_task.cancel()
 
     except Exception as e:
         import traceback

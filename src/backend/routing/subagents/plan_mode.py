@@ -163,7 +163,7 @@ async def astream_generate_plan(
     # 等待 memory 完成（planner 需要 retrieved_memory），同时发送心跳保持 SSE 连接
     while not memory_task.done():
         yield {"type": "heartbeat"}
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.5)
 
     try:
         retrieved_memory = await memory_task
@@ -195,7 +195,7 @@ async def astream_generate_plan(
         # 等待 planner 完成，期间发送心跳
         while not planner_task.done():
             yield {"type": "heartbeat"}
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.5)
 
         plan_data = await planner_task
 

@@ -9,13 +9,19 @@ All model configuration is resolved from the DB via ModelConfigService.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import time
+from typing import Optional, Tuple
 
 from agentscope.model import OpenAIChatModel
 
 from prompts.prompt_config import ModelConfig
 
 logger = logging.getLogger(__name__)
+
+# TTL cache for model instances — avoids repeated DB queries on every bare-agent creation.
+# Key: (role_key, disable_thinking, stream). TTL: 60 seconds.
+_MODEL_CACHE: dict[str, Tuple[OpenAIChatModel, float]] = {}
+_MODEL_CACHE_TTL = 60.0
 
 
 def make_chat_model(
@@ -71,10 +77,15 @@ def get_default_model(
     disable_thinking: bool = False,
     stream: bool = False,
 ) -> OpenAIChatModel:
+    _cache_key = f"main_agent:{disable_thinking}:{stream}"
+    _cached = _MODEL_CACHE.get(_cache_key)
+    if _cached and (time.monotonic() - _cached[1]) < _MODEL_CACHE_TTL:
+        return _cached[0]
+
     cfg = cfg or ModelConfig()
     resolved = _resolve_or_dummy("main_agent")
     if resolved:
-        return make_chat_model(
+        model = make_chat_model(
             model=resolved.model_name,
             temperature=resolved.temperature,
             max_tokens=resolved.max_tokens,
@@ -84,17 +95,20 @@ def get_default_model(
             disable_thinking=disable_thinking,
             stream=stream,
         )
-    # Fallback: dummy model so the app can still start
-    return make_chat_model(
-        model="dummy-model",
-        temperature=cfg.temperature,
-        max_tokens=cfg.max_tokens,
-        timeout=cfg.timeout,
-        base_url="",
-        api_key="",
-        disable_thinking=disable_thinking,
-        stream=stream,
-    )
+    else:
+        # Fallback: dummy model so the app can still start
+        model = make_chat_model(
+            model="dummy-model",
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            timeout=cfg.timeout,
+            base_url="",
+            api_key="",
+            disable_thinking=disable_thinking,
+            stream=stream,
+        )
+    _MODEL_CACHE[_cache_key] = (model, time.monotonic())
+    return model
 
 
 def get_summarize_model(cfg: ModelConfig | None = None) -> OpenAIChatModel:
