@@ -656,15 +656,18 @@ async def astream_chat_workflow(
 
         # ── User profile injection ────────────────────────────────
         # _profile_task was started earlier in parallel with pool acquire.
-        # Wait at most 1.5s — if LLM hasn't responded yet, skip injection
-        # (stream starts immediately; profile memory save still runs in bg).
+        # Budget: profile task has up to 12s total from workflow start.
+        # If agent creation already consumed most of that, we may still
+        # have headroom left; if not (pool path), add 1.5s grace period.
         _profile = None
         try:
-            _profile = await asyncio.wait_for(asyncio.shield(_profile_task), timeout=1.5)
+            _elapsed_so_far = _time.monotonic() - _wf_start
+            _profile_budget = max(1.5, 12.0 - _elapsed_so_far)
+            _profile = await asyncio.wait_for(asyncio.shield(_profile_task), timeout=_profile_budget)
             logger.info("[workflow] user profile ready before stream (elapsed=%.0fms)",
                         (_time.monotonic() - _wf_start) * 1000)
         except asyncio.TimeoutError:
-            logger.info("[workflow] user profile not ready within 1.5s, starting stream without injection")
+            logger.info("[workflow] user profile not ready within budget, starting stream without injection")
         except Exception as _up_exc:
             logger.warning("[workflow] user profile extraction failed (non-critical): %s", _up_exc)
 
