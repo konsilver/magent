@@ -737,7 +737,8 @@ async def astream_execute_plan(
                     yield {"type": "plan_step_progress", "step_id": step.step_id,
                            "delta": f"\nQA 触发局部重新规划（从当前步骤重做）...\n"}
 
-                    replan_memory = await _retrieve_plan_memory(user_id, plan_dict["task_input"])
+                    # 局部 REPLAN 复用 Phase 1 检索到的记忆，避免重复 Milvus 查询
+                    replan_memory = plan_retrieved_memory or await _retrieve_plan_memory(user_id, plan_dict["task_input"])
                     replan_ctx = {
                         "complete": False,
                         "failed_step": step.step_order,
@@ -922,21 +923,24 @@ async def astream_execute_plan(
 
         overall_summary = f"共 {len(steps)} 个步骤，完成 {completed_count} 个"
 
-        # 调用 Summary Agent 将所有步骤结果整合为面向用户的可读回答
+        # Summary Agent 与 QA_final 并行执行（QA_final 用 last_step_text 作为输入，
+        # 因为此时 result_text 尚未生成，用最后一步输出代替，足以判断计划整体建议）
         yield {"type": "plan_step_progress", "step_id": None, "delta": "正在整合结果...\n"}
-        result_text = await _run_summary(
-            board=board,
-            step_summaries=step_summaries,
-            last_step_output=last_step_text,
-            model_name=_role_model("qa", model_name),
-            user_id=user_id,
-        )
-
-        qa_final = await _run_qa_final(
-            board=board,
-            final_output=result_text,
-            model_name=_role_model("qa", model_name),
-            user_id=user_id,
+        _qa_model = _role_model("qa", model_name)
+        result_text, qa_final = await asyncio.gather(
+            _run_summary(
+                board=board,
+                step_summaries=step_summaries,
+                last_step_output=last_step_text,
+                model_name=_qa_model,
+                user_id=user_id,
+            ),
+            _run_qa_final(
+                board=board,
+                final_output=last_step_text,
+                model_name=_qa_model,
+                user_id=user_id,
+            ),
         )
         task_success = final_status == "completed"
 

@@ -245,20 +245,27 @@ _PLANNER_PROMPT_TEMPLATE = """你是 Planner Agent，负责将用户任务拆解
 - 不生成局部约束或输出格式
 - 如果有 replan_context，必须利用 failure_reason 做修正
 - **步骤解耦原则**：每个 step 应尽量独立（可单独理解和执行），避免步骤之间强耦合；允许逻辑上的递进关系，但每步的输入应来自上下文而非对前一步的硬性依赖
-- **步骤数量限制**：简单任务（问答、推荐、解释）2~3步；复杂任务最多不超过6步；禁止因过度拆分导致步骤冗余"""
+- **步骤数量限制**：简单任务（问答、推荐、解释）2~3步；复杂任务最多不超过6步；禁止因过度拆分导致步骤冗余
+- **【严格禁止】** 不得生成任何涉及"记录用户偏好/特征"、"保存用户信息"、"更新用户画像"、"记住用户偏好"等操作的步骤。用户特征的提取和记忆写入由系统的 user-profile 模块自动处理，Planner 无需也不应介入"""
 
 
-_INTENT_CLASSIFY_PROMPT = """你是意图分类助手。根据用户的回复，判断他们的意图。
+_INTENT_CLASSIFY_PROMPT = """你是意图分类助手。你的唯一任务是判断用户对当前计划的态度，并输出一个 JSON。
 
-## 用户回复
+## 用户回复内容
 {user_reply}
 
 ## 判断规则
-- 如果用户的意思是"同意/确认/开始执行当前计划"，输出 "confirm"
-- 如果用户的意思是"不满意/想重新规划/有新的建议/修改计划"，输出 "replan"
+- "confirm"：用户明确同意、确认、接受当前计划，想开始执行（例如："好的"、"确认"、"开始吧"、"没问题"）
+- "replan"：用户对计划不满意、提出修改建议、要求重新规划、或在回复中包含任何新的方向性意见（例如："重新规划"、"我想换个方向"、"能不能改成..."、"我特别想..."）
 
-只输出以下 JSON：
-{{"intent": "confirm|replan"}}"""
+## 重要
+- 只要用户回复中含有建议、偏好、修改要求，即使措辞温和，也必须判断为 "replan"
+- 不得输出任何分析过程或解释，只输出下面格式的 JSON
+
+输出格式（严格遵守，不得附加任何其他内容）：
+{{"intent": "confirm"}}
+或
+{{"intent": "replan"}}"""
 
 
 async def _classify_user_intent(user_reply: str, model_name: str, user_id: str) -> str:
@@ -274,10 +281,15 @@ async def _classify_user_intent(user_reply: str, model_name: str, user_id: str) 
         if data and data.get("intent") in ("confirm", "replan"):
             logger.info("[IntentClassify] intent=%s", data["intent"])
             return data["intent"]
-        logger.warning("[IntentClassify] unexpected output, defaulting to confirm: %r", text[:100])
+        # 解析失败时尝试从原始文本中关键词兜底，避免误判为 confirm
+        text_lower = text.lower() if text else ""
+        if "replan" in text_lower or "重新" in (text or "") or "建议" in (text or ""):
+            logger.warning("[IntentClassify] parse failed but keyword matched replan, raw=%r", text[:100])
+            return "replan"
+        logger.warning("[IntentClassify] unexpected output, defaulting to replan (safe fallback): %r", text[:100])
     except Exception as exc:
-        logger.warning("[IntentClassify] failed (defaulting to confirm): %s", exc)
-    return "confirm"
+        logger.warning("[IntentClassify] failed (defaulting to replan): %s", exc)
+    return "replan"
 
 
 async def _run_planner(
@@ -480,7 +492,7 @@ async def _run_warmup(
         first_step_description=first_step_description,
     )
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=90, _agent_label="Warmup")
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="Warmup")
         data = _parse_json_output(text)
         if data:
             if data.get("refined_user_goal"):
@@ -613,6 +625,12 @@ async def _run_qa(
     """Run QA Agent, return verdict dict."""
     logger.info("[QA] START step=%s(%r) result_chars=%d has_local_constraint=%s",
                 step.step_id, step.title, len(result), bool(local_constraint))
+
+    # 简单任务（low risk / simple complexity）使用更短的 QA timeout
+    task_risk = board.get("check", {}).get("task_risk", "medium")
+    task_complexity = board.get("check", {}).get("task_complexity", "complex")
+    qa_timeout = 30 if (task_risk == "low" or task_complexity == "simple") else 60
+
     prompt = _QA_PROMPT_TEMPLATE.format(
         context_board=_context_board_summary(board),
         step_info=json.dumps({"step_id": step.step_id, "title": step.title, "description": step.description}, ensure_ascii=False),
@@ -621,7 +639,7 @@ async def _run_qa(
         expected_schema=json.dumps(expected_schema, ensure_ascii=False),
     )
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="QA")
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=qa_timeout, _agent_label="QA")
         data = _parse_json_output(text)
         if data and "verdict" in data:
             if isinstance(data.get("failure_reason"), dict):

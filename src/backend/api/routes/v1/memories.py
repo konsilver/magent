@@ -107,6 +107,8 @@ async def remove_all_memories(
     type: Optional[str] = Query(None, description="按记忆类型过滤删除，如 user_profile"),
 ):
     """清空当前用户记忆。传入 type 参数时只删除指定类型，否则删除全部。"""
+    if not MEM0_ENABLED:
+        return success_response(data={"message": "记忆系统未启用，无需清除"})
     if type:
         ok = await delete_memories_by_type(str(user.user_id), type)
         if not ok:

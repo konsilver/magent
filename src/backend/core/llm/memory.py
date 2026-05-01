@@ -627,11 +627,16 @@ async def delete_all_memories(user_id: str) -> bool:
 async def delete_memories_by_type(user_id: str, memory_type: str) -> bool:
     """清空用户指定类型的记忆（按 metadata.type 过滤后逐条删除）。
 
-    mem0 的 metadata scalar filter 可能不透传，降级为全量获取后应用层过滤。
+    mem0 的 metadata scalar filter 可能不透传到 Milvus，采用多重兜底策略：
+    1. 尝试 metadata filter 查询
+    2. 失败或无结果时，全量扫描 + 应用层 metadata.type 过滤
+    3. 仍无结果时，对 user_profile 类型额外用文本特征匹配（"用户特征"关键词）
     """
     if not MEM0_ENABLED or not user_id:
         return False
+
     items = await get_memories_by_metadata(user_id, {"type": memory_type})
+
     if not items:
         # mem0 metadata filter 不可靠，降级为全量扫描 + 应用层过滤
         all_items = await get_all_memories(user_id)
@@ -639,13 +644,35 @@ async def delete_memories_by_type(user_id: str, memory_type: str) -> bool:
             item for item in all_items
             if (item.get("metadata") or {}).get("type") == memory_type
         ]
+
+        # 对 user_profile 类型额外匹配文本特征（metadata patch 可能未执行成功）
+        if not items and memory_type == "user_profile":
+            items = [
+                item for item in all_items
+                if "用户特征" in (item.get("memory") or "")
+            ]
+            if items:
+                logger.info(
+                    "[MemoryService] user_profile metadata filter failed, "
+                    "matched %d items by text heuristic for user=%s",
+                    len(items), user_id,
+                )
+
     if not items:
+        logger.info("[MemoryService] no %s memories found for user=%s, nothing to delete", memory_type, user_id)
         return True
+
+    logger.info("[MemoryService] deleting %d %s memories for user=%s", len(items), memory_type, user_id)
     results = await asyncio.gather(
         *[delete_memory(item["id"]) for item in items if item.get("id")],
         return_exceptions=True,
     )
-    return all(r is True for r in results)
+    success = all(r is True for r in results)
+    if not success:
+        failed = sum(1 for r in results if r is not True)
+        logger.warning("[MemoryService] %d/%d deletions failed for user=%s type=%s",
+                       failed, len(results), user_id, memory_type)
+    return success
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
