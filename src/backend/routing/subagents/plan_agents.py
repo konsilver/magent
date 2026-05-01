@@ -255,17 +255,24 @@ _INTENT_CLASSIFY_PROMPT = """你是意图分类助手。你的唯一任务是判
 {user_reply}
 
 ## 判断规则
-- "confirm"：用户明确同意、确认、接受当前计划，想开始执行（例如："好的"、"确认"、"开始吧"、"没问题"）
-- "replan"：用户对计划不满意、提出修改建议、要求重新规划、或在回复中包含任何新的方向性意见（例如："重新规划"、"我想换个方向"、"能不能改成..."、"我特别想..."）
+- "confirm"：用户明确同意、确认、接受当前计划，想开始执行
+  确认的典型表达：好的、确认、开始吧、没问题、可以、执行、同意、就按这个、确认执行、开始执行、行、好
+- "replan"：用户对计划不满意、提出修改建议、要求重新规划、或在回复中包含新的方向性意见
+  重新规划的典型表达：重新规划、我想换个方向、能不能改成...、我特别想...、不对、不好、再想想
 
 ## 重要
-- 只要用户回复中含有建议、偏好、修改要求，即使措辞温和，也必须判断为 "replan"
-- 不得输出任何分析过程或解释，只输出下面格式的 JSON
+- 如果用户回复非常简短且只表达同意（如"好"、"好的"、"确认"、"可以"、"执行"），必须判断为 "confirm"
+- 只要用户回复中含有实质性的修改建议或方向性意见，才判断为 "replan"
+- 不得输出任何分析过程或解释，只输出下面格式的 JSON，不要有任何其他文字
 
-输出格式（严格遵守，不得附加任何其他内容）：
+输出格式（严格遵守）：
 {{"intent": "confirm"}}
 或
 {{"intent": "replan"}}"""
+
+# 快速关键词匹配：用户输入中明确表示确认的词汇（在 LLM 解析失败时使用）
+_CONFIRM_KEYWORDS = {"确认", "执行", "好的", "好", "可以", "开始", "同意", "没问题", "行", "继续", "ok", "yes", "确定"}
+_REPLAN_KEYWORDS = {"重新", "重规划", "修改", "不对", "不行", "不好", "换个", "改成", "建议"}
 
 
 async def _classify_user_intent(user_reply: str, model_name: str, user_id: str) -> str:
@@ -274,6 +281,15 @@ async def _classify_user_intent(user_reply: str, model_name: str, user_id: str) 
     Returns 'confirm' or 'replan'.
     """
     logger.info("[IntentClassify] classifying user reply (len=%d): %r", len(user_reply), user_reply[:80])
+
+    # 快速路径：对极短的纯确认输入直接返回 confirm，跳过 LLM 调用
+    reply_stripped = user_reply.strip()
+    if len(reply_stripped) <= 10:
+        reply_lower = reply_stripped.lower()
+        if any(kw in reply_stripped or kw in reply_lower for kw in _CONFIRM_KEYWORDS):
+            logger.info("[IntentClassify] fast-path confirm (short keyword match): %r", reply_stripped)
+            return "confirm"
+
     prompt = _INTENT_CLASSIFY_PROMPT.format(user_reply=user_reply[:500])
     try:
         text = await _call_llm_agent(prompt, model_name, user_id, timeout=20, _agent_label="IntentClassify")
@@ -281,12 +297,28 @@ async def _classify_user_intent(user_reply: str, model_name: str, user_id: str) 
         if data and data.get("intent") in ("confirm", "replan"):
             logger.info("[IntentClassify] intent=%s", data["intent"])
             return data["intent"]
-        # 解析失败时尝试从原始文本中关键词兜底，避免误判为 confirm
-        text_lower = text.lower() if text else ""
-        if "replan" in text_lower or "重新" in (text or "") or "建议" in (text or ""):
-            logger.warning("[IntentClassify] parse failed but keyword matched replan, raw=%r", text[:100])
+
+        # JSON 解析失败：先匹配 confirm 关键词，再匹配 replan 关键词，最后才 fallback
+        raw = (text or "").strip()
+        raw_lower = raw.lower()
+        # LLM 输出中若含有 "confirm" 字符串视为 confirm
+        if '"confirm"' in raw_lower or "'confirm'" in raw_lower:
+            logger.warning("[IntentClassify] parse failed but found confirm in raw output: %r", raw[:100])
+            return "confirm"
+        if '"replan"' in raw_lower or "'replan'" in raw_lower:
+            logger.warning("[IntentClassify] parse failed but found replan in raw output: %r", raw[:100])
             return "replan"
-        logger.warning("[IntentClassify] unexpected output, defaulting to replan (safe fallback): %r", text[:100])
+
+        # 再从用户原始输入做关键词兜底（而非从 LLM 输出中找）
+        reply_lower = user_reply.lower()
+        if any(kw in user_reply or kw in reply_lower for kw in _CONFIRM_KEYWORDS):
+            logger.warning("[IntentClassify] parse failed, user input matched confirm keyword, raw=%r", raw[:100])
+            return "confirm"
+        if any(kw in user_reply for kw in _REPLAN_KEYWORDS):
+            logger.warning("[IntentClassify] parse failed, user input matched replan keyword, raw=%r", raw[:100])
+            return "replan"
+
+        logger.warning("[IntentClassify] parse failed and no keyword matched, defaulting to replan: %r", raw[:100])
     except Exception as exc:
         logger.warning("[IntentClassify] failed (defaulting to replan): %s", exc)
     return "replan"

@@ -413,6 +413,7 @@ export async function sendPlanMode(
       let newPlanEvt: Record<string, unknown> | null = null;
       let errorEvt: Record<string, unknown> | null = null;
       let intentProgressText = '正在识别意图...';
+      let replanProgressStarted = false;
 
       try {
         intentOuter: while (true) {
@@ -430,6 +431,11 @@ export async function sendPlanMode(
               try {
                 const evt = JSON.parse(data) as Record<string, unknown>;
                 if (evt.type === 'plan_generating') {
+                  // replan 路径：不要把进度文字拼接到"正在识别意图..."上，单独展示
+                  if (!replanProgressStarted) {
+                    replanProgressStarted = true;
+                    intentProgressText = '';
+                  }
                   intentProgressText += String(evt.delta || '');
                   appendAssistant(intentProgressText, true);
                 } else if (evt.type === 'plan_confirm') {
