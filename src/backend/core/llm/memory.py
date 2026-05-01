@@ -402,6 +402,98 @@ def _apply_time_decay(item: dict, base_score: float) -> float:
         return base_score
 
 
+def _patch_ltm_search(ltm) -> None:
+    """Patch Mem0LongTermMemory.retrieve / retrieve_from_memory to use
+    the new mem0 search() API (filters= dict instead of top-level user_id=).
+
+    AgentScope's Mem0LongTermMemory was written against the old mem0 API
+    where user_id/agent_id/run_id were passed as top-level kwargs to search().
+    Newer mem0 versions require filters={'user_id': ...} instead. This patch
+    replaces the two affected methods on the instance level so the library
+    file itself is not modified.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    _uid = ltm.user_id
+    _aid = ltm.agent_id
+    _rid = ltm.run_id
+
+    def _build_filters():
+        f = {}
+        if _uid:
+            f["user_id"] = _uid
+        if _aid:
+            f["agent_id"] = _aid
+        if _rid:
+            f["run_id"] = _rid
+        return f or None
+
+    async def _patched_retrieve(self, msg, limit=5, **kwargs):
+        from agentscope.message import Msg
+        if isinstance(msg, Msg):
+            msg = [msg]
+        if not isinstance(msg, list):
+            raise TypeError("The input message must be a Msg or a list of Msg objects.")
+
+        msg_strs = [_json.dumps(_.to_dict()["content"], ensure_ascii=False) for _ in msg]
+        filters = _build_filters()
+
+        search_coroutines = [
+            self.long_term_working_memory.search(
+                query=item,
+                filters=filters,
+                top_k=limit,
+            )
+            for item in msg_strs
+        ]
+        search_results = await _asyncio.gather(*search_coroutines)
+
+        results = []
+        for result in search_results:
+            if result:
+                results.extend([m["memory"] for m in result.get("results", [])])
+                if "relations" in result:
+                    results.extend(self._format_relations(result))
+        return "\n".join(results)
+
+    async def _patched_retrieve_from_memory(self, keywords, limit=5, **kwargs):
+        from agentscope.message import Msg, TextBlock
+        from agentscope.tool import ToolResponse
+        filters = _build_filters()
+
+        try:
+            search_coroutines = [
+                self.long_term_working_memory.search(
+                    query=kw,
+                    filters=filters,
+                    top_k=limit,
+                )
+                for kw in keywords
+            ]
+            search_results = await _asyncio.gather(*search_coroutines)
+
+            results = []
+            for result in search_results:
+                if result:
+                    results.extend([item["memory"] for item in result.get("results", [])])
+                    if "relations" in result:
+                        results.extend(self._format_relations(result))
+
+            return ToolResponse(
+                content=[TextBlock(type="text", text="\n".join(results))],
+            )
+        except Exception as e:
+            return ToolResponse(
+                content=[TextBlock(type="text", text=f"Error retrieving memory: {e}")],
+            )
+
+    import types as _types
+    ltm.retrieve = _types.MethodType(_patched_retrieve, ltm)
+    ltm.retrieve_from_memory = _types.MethodType(_patched_retrieve_from_memory, ltm)
+    logger.debug("[MemoryService] Mem0LongTermMemory search methods patched for new mem0 API")
+
+
 def build_long_term_memory(user_id: str):
     """构建 AgentScope Mem0LongTermMemory 实例，用于原生集成。
 
@@ -470,6 +562,9 @@ def build_long_term_memory(user_id: str):
             mem0_config=mem0_config,
             suppress_mem0_logging=True,
         )
+
+        _patch_ltm_search(ltm)
+
         logger.info("[MemoryService] 创建 Mem0LongTermMemory: user=%s", user_id)
         return ltm
     except Exception as exc:
