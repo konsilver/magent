@@ -228,15 +228,18 @@ class AgentPool:
 
         return _PooledAgent(agent, base_prompt)
 
-    async def _acquire_direct(self) -> _PooledAgent:
+    async def _acquire_direct(self, timeout: float = 3.0) -> _PooledAgent:
         """Acquire a pool slot directly (caller must call slot._lock.release() when done).
 
         Tries each slot non-blockingly; if all are busy, polls with a short
         sleep until one is free or the timeout is reached.
         asyncio.Lock has no acquire_nowait() — we use locked() as a fast-path
         guard and then attempt a zero-timeout acquire via wait_for.
+
+        timeout defaults to 3s: plan-mode SubAgents fall back to create_agent_executor
+        (~45ms) if pool is busy, so long waits are wasteful.
         """
-        deadline = asyncio.get_event_loop().time() + 30.0
+        deadline = asyncio.get_event_loop().time() + timeout
 
         while True:
             for slot in self._agents:
@@ -254,16 +257,17 @@ class AgentPool:
             await asyncio.sleep(min(0.05, remaining))
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncIterator[_PooledAgent]:
+    async def acquire(self, timeout: float = 3.0) -> AsyncIterator[_PooledAgent]:
         """Acquire a free agent from the pool, yield it, then release.
 
         On timeout falls back to a fresh create_agent_executor() agent.
+        timeout defaults to 3s so normal chat requests don't wait long if pool is busy.
         """
         slot: Optional[_PooledAgent] = None
         fallback_clients: list = []
         try:
             try:
-                slot = await self._acquire_direct()
+                slot = await self._acquire_direct(timeout=timeout)
                 slot.reset()
                 logger.debug("[agent_pool] acquired agent")
                 yield slot

@@ -130,6 +130,7 @@ class RoleModelSettings:
         ROLE_SUBAGENT_MODEL      — SubAgent (step executor)
         ROLE_QA_MODEL            — QA agent (per-step + final)
         ROLE_INTENT_MODEL        — Intent classifier (confirm/replan)
+        ROLE_SUMMARY_MODEL       — Summary agent (final plan result)
     """
 
     user_profile: str = field(default_factory=lambda: _env("ROLE_USER_PROFILE_MODEL", _env("BASE_MODEL_NAME", "")))
@@ -138,6 +139,7 @@ class RoleModelSettings:
     subagent: str = field(default_factory=lambda: _env("ROLE_SUBAGENT_MODEL", _env("BASE_MODEL_NAME", "")))
     qa: str = field(default_factory=lambda: _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", "")))
     intent: str = field(default_factory=lambda: _env("ROLE_INTENT_MODEL", _env("BASE_MODEL_NAME", "")))
+    summary: str = field(default_factory=lambda: _env("ROLE_SUMMARY_MODEL", _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", ""))))
 
 
 @dataclass(frozen=True)

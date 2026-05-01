@@ -224,7 +224,8 @@ async def generate_plan(
         except Exception as exc:
             logger.exception("generate_plan SSE error")
             yield f"data: {json.dumps({'type': 'plan_error', 'error': str(exc)}, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
@@ -496,11 +497,13 @@ async def execute_plan(
             logger.exception("execute_plan SSE error")
             yield f"data: {json.dumps({'type': 'plan_error', 'plan_id': plan_id, 'error': str(exc)}, ensure_ascii=False)}\n\n"
         finally:
+            # [DONE] must always be yielded — ASGI requires the generator to
+            # complete its response before the callable returns.
+            yield "data: [DONE]\n\n"
             try:
                 _log_ctx.__exit__(None, None, None)
             except Exception:
                 pass
-        yield "data: [DONE]\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 

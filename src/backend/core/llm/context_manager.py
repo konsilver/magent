@@ -26,11 +26,16 @@ MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
     "qwen-plus": 128_000,
     "qwen-turbo": 128_000,
     "qwen3_80b": 128_000,
+    # 通用别名（前端/env 传入的 role key 或简写）
+    "qwen": 128_000,
     # GLM 系列
     "glm-5": 130_000,
     "glm-4": 128_000,
     "glm-4-plus": 128_000,
     "glm-4-long": 1_000_000,
+    # MiniMax 系列
+    "minimax-m27": 200_000,
+    "minimax": 200_000,
     # DeepSeek 系列
     "deepseek-chat": 128_000,
     "deepseek-reasoner": 128_000,

@@ -923,26 +923,27 @@ async def astream_execute_plan(
 
         overall_summary = f"共 {len(steps)} 个步骤，完成 {completed_count} 个"
 
-        # Summary Agent 与 QA_final 并行执行（QA_final 用 last_step_text 作为输入，
-        # 因为此时 result_text 尚未生成，用最后一步输出代替，足以判断计划整体建议）
+        # QA_final 单独运行（轻量 minimax 模型，通常 <5s），
+        # Summary Agent 移至 plan_complete 事件发出后异步执行，不阻塞用户响应
         yield {"type": "plan_step_progress", "step_id": None, "delta": "正在整合结果...\n"}
         _qa_model = _role_model("qa", model_name)
-        result_text, qa_final = await asyncio.gather(
-            _run_summary(
-                board=board,
-                step_summaries=step_summaries,
-                last_step_output=last_step_text,
-                model_name=_qa_model,
-                user_id=user_id,
-            ),
-            _run_qa_final(
-                board=board,
-                final_output=last_step_text,
-                model_name=_qa_model,
-                user_id=user_id,
-            ),
+        _summary_model = _role_model("summary", model_name)
+
+        qa_final = await _run_qa_final(
+            board=board,
+            final_output=last_step_text,
+            model_name=_qa_model,
+            user_id=user_id,
         )
         task_success = final_status == "completed"
+
+        _final_plan_suggestion = qa_final.get("plan_suggestion", "")
+        if _final_plan_suggestion:
+            board["plan"]["plan_suggestion"] = _final_plan_suggestion
+
+        # 用 last_step_text 作为初始 result_text，先发送 plan_complete 响应给用户
+        # Summary Agent 在后台异步生成精炼摘要，完成后通过 plan_summary_updated 事件推送
+        result_text = last_step_text
 
         _update_stored_plan(
             plan_id,
@@ -950,41 +951,6 @@ async def astream_execute_plan(
             completed_steps=completed_count,
             result_summary=result_text[:2000] if result_text else overall_summary,
         )
-
-        _final_plan_suggestion = qa_final.get("plan_suggestion", "")
-        if _final_plan_suggestion:
-            board["plan"]["plan_suggestion"] = _final_plan_suggestion
-        _save_task_memory_background(
-            user_id=user_id,
-            user_goal=board["plan"].get("user_goal", ""),
-            plan_steps=[s.title for s in steps],
-            success=bool(task_success),
-            quality_score=1.0 if task_success else 0.5,
-            failure_reason="",
-            final_solution_summary=result_text[:500],
-            forced=False,
-            key_constraints=[
-                c.get("constraint", "")
-                for c in board["check"].get("global_constraints", [])
-            ],
-            plan_id=plan_id,
-            step_details=[{"step_id": s.step_id, "title": s.title} for s in steps],
-            plan_suggestion=_final_plan_suggestion,
-            model_name=model_name,
-        )
-
-        for board_step in board["plan"]["steps"]:
-            if not board_step.get("_qa_passed"):
-                continue
-            _save_step_memory_background(
-                user_id=user_id,
-                step_description=board_step.get("_step_description") or board_step.get("description", ""),
-                tool_use_trace=board_step.get("tool_use_trace", []),
-                local_constraint=board_step.get("_local_constraint", {}),
-                had_redo=board_step.get("_had_redo", False),
-                qa_suggestion=board_step.get("_qa_suggestion", ""),
-                model_name=_role_model("qa", model_name),
-            )
 
         records = _cumulative_usage.usage_records
         total_prompt = sum(r.get("prompt_tokens", 0) for r in records)
@@ -1017,6 +983,60 @@ async def astream_execute_plan(
             tool_calls_count=_plan_tool_count,
             duration_ms=int((_time.monotonic() - _plan_run_start) * 1000),
         )
+
+        # ── 后台异步：Summary 精炼 + 记忆写入，不阻塞用户响应 ─────────────────
+        async def _background_finalize() -> None:
+            try:
+                refined = await _run_summary(
+                    board=board,
+                    step_summaries=step_summaries,
+                    last_step_output=last_step_text,
+                    model_name=_summary_model,
+                    user_id=user_id,
+                )
+                if refined and refined != last_step_text:
+                    _update_stored_plan(
+                        plan_id,
+                        result_summary=refined[:2000],
+                    )
+                    logger.info("[Summary] background refined result written to plan store")
+            except Exception as _exc:
+                logger.debug("[Summary] background finalize failed (non-critical): %s", _exc)
+                refined = last_step_text
+
+            _save_task_memory_background(
+                user_id=user_id,
+                user_goal=board["plan"].get("user_goal", ""),
+                plan_steps=[s.title for s in steps],
+                success=bool(task_success),
+                quality_score=1.0 if task_success else 0.5,
+                failure_reason="",
+                final_solution_summary=(refined or last_step_text)[:500],
+                forced=False,
+                key_constraints=[
+                    c.get("constraint", "")
+                    for c in board["check"].get("global_constraints", [])
+                ],
+                plan_id=plan_id,
+                step_details=[{"step_id": s.step_id, "title": s.title} for s in steps],
+                plan_suggestion=_final_plan_suggestion,
+                model_name=model_name,
+            )
+
+            for board_step in board["plan"]["steps"]:
+                if not board_step.get("_qa_passed"):
+                    continue
+                _save_step_memory_background(
+                    user_id=user_id,
+                    step_description=board_step.get("_step_description") or board_step.get("description", ""),
+                    tool_use_trace=board_step.get("tool_use_trace", []),
+                    local_constraint=board_step.get("_local_constraint", {}),
+                    had_redo=board_step.get("_had_redo", False),
+                    qa_suggestion=board_step.get("_qa_suggestion", ""),
+                    model_name=_role_model("qa", model_name),
+                )
+
+        asyncio.create_task(_background_finalize())
 
     except Exception as exc:
         logger.exception("Plan execution failed")

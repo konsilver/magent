@@ -418,6 +418,7 @@ async def create_agent_executor(
 
             # Connect HTTP transport servers (fast — no subprocess spawn)
             import time as _time_mod
+            _HTTP_MCP_CONNECT_TIMEOUT = 5.0  # seconds; fail fast if KB server is down
             for key, srv_cfg in http_server_cfgs.items():
                 _http_start = _time_mod.monotonic()
                 try:
@@ -427,11 +428,14 @@ async def create_agent_executor(
                         url=srv_cfg.get("url", KB_MCP_HTTP_URL),
                         headers=srv_cfg.get("headers"),
                     )
-                    await client.connect()
+                    await asyncio.wait_for(client.connect(), timeout=_HTTP_MCP_CONNECT_TIMEOUT)
                     await toolkit.register_mcp_client(client, namesake_strategy="rename")
                     http_clients.append(client)
                     _log.info("[factory] HTTP MCP '%s' connected in %.0fms",
                               key, (_time_mod.monotonic() - _http_start) * 1000)
+                except asyncio.TimeoutError:
+                    _log.warning("[factory] HTTP MCP '%s' connect timed out (%.0fs), skipping",
+                                 key, _HTTP_MCP_CONNECT_TIMEOUT)
                 except Exception as exc:
                     _log.warning("[factory] HTTP MCP '%s' connect failed: %s", key, exc)
 
