@@ -424,7 +424,6 @@ def build_long_term_memory(user_id: str):
             LlmConfig,
             EmbedderConfig,
             VectorStoreConfig as Mem0VectorStoreConfig,
-            GraphStoreConfig,
         )
 
         # 复用现有 _build_mem0_config 获取配置参数
@@ -452,13 +451,17 @@ def build_long_term_memory(user_id: str):
             custom_fact_extraction_prompt=raw_cfg.get("custom_fact_extraction_prompt"),
         )
 
-        # 如果启用图记忆，添加 graph_store 配置
+        # 如果启用图记忆，尝试添加 graph_store 配置（需要 GraphStoreConfig，旧版本可能不存在）
         if MEM0_GRAPH_ENABLED and "graph_store" in raw_cfg:
-            graph_cfg_raw = raw_cfg["graph_store"].get("config", {})
-            mem0_config.graph_store = GraphStoreConfig(
-                provider="neo4j",
-                config=graph_cfg_raw,
-            )
+            try:
+                from mem0.configs.base import GraphStoreConfig
+                graph_cfg_raw = raw_cfg["graph_store"].get("config", {})
+                mem0_config.graph_store = GraphStoreConfig(
+                    provider="neo4j",
+                    config=graph_cfg_raw,
+                )
+            except ImportError:
+                logger.warning("[MemoryService] GraphStoreConfig 不可用（mem0 版本不支持），跳过图记忆配置")
 
         _patch_mem0_embedding()
 

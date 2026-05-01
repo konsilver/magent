@@ -138,7 +138,7 @@ async def _run_user_profile_agent(
     )
     logger.info("[UserProfileAgent] extracting user profile for user=%s input_chars=%d", user_id, len(user_input))
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=30, _agent_label="UserProfileAgent")
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="UserProfileAgent")
         data = _parse_json_output(text)
         if data:
             board["user"]["urgent"] = data.get("urgent")
@@ -180,7 +180,7 @@ async def extract_user_profile(
     )
     logger.info("[UserProfile] extracting profile user=%s input_chars=%d", user_id, len(user_input))
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=30, _agent_label="UserProfile")
+        text = await _call_llm_agent(prompt, model_name, user_id, timeout=60, _agent_label="UserProfile")
         data = _parse_json_output(text)
         if data:
             logger.info("[UserProfile] done: urgent=%r mem_present=%s",
