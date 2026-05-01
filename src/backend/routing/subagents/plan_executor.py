@@ -21,7 +21,7 @@ from routing.subagents.plan_store import (
     _context_board_summary,
     _parse_json_output,
 )
-from routing.subagents.plan_agents import _run_qa, _run_qa_final
+from routing.subagents.plan_agents import _run_qa
 
 
 def _build_subagent_instruction(
@@ -31,22 +31,42 @@ def _build_subagent_instruction(
     local_constraint: Dict,
     expected_schema: Dict,
     retrieved_memory: Dict,
-    failure_reason: Optional[List[Dict]] = None,
 ) -> str:
     """Build full instruction string for SubAgent."""
     parts = []
 
     parts.append(f"## context 黑板（共享状态）\n{_context_board_summary(board)}")
-    parts.append(f"## 我的当前任务\n**步骤 {step.step_order}**: {step.title}\n{step.description or ''}")
+    parts.append(
+        f"## 我的当前任务\n"
+        f"**step_id**: {step.step_id}\n"
+        f"**步骤 {step.step_order}**: {step.title}\n"
+        f"{step.description or ''}"
+    )
+
+    # 提示 subagent 可参考已完成步骤的输出
+    completed_outputs = [
+        s for s in board.get("plan", {}).get("steps", [])
+        if s.get("output") is not None and s.get("step_id") != step.step_id
+    ]
+    if completed_outputs:
+        parts.append(
+            "## 说明\n"
+            "context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，如有必要可参考。"
+        )
 
     if local_constraint:
-        parts.append(f"## 我需要遵守的局部约束\n{json.dumps(local_constraint, ensure_ascii=False, indent=2)}")
+        parts.append(f"## 上个 Agent 为我制定的局部约束\n{json.dumps(local_constraint, ensure_ascii=False, indent=2)}")
 
     if expected_schema:
-        parts.append(f"## 我的输出格式要求\n{json.dumps(expected_schema, ensure_ascii=False, indent=2)}")
+        parts.append(f"## 上个 Agent 为我定义的输出格式\n{json.dumps(expected_schema, ensure_ascii=False, indent=2)}")
 
-    if failure_reason:
-        parts.append(f"## QA 失败原因（请针对性修正）\n{json.dumps(failure_reason, ensure_ascii=False, indent=2)}")
+    # REDO 情况：从 board["plan"]["suggestion"] 读取 QA 建议
+    redo_suggestion = board.get("plan", {}).get("suggestion")
+    if redo_suggestion:
+        parts.append(
+            f"## 【重做任务】QA 优化建议\n"
+            f"你的上一次执行未通过 QA 检查，请参考以下建议重新完成任务：\n{redo_suggestion}"
+        )
 
     patterns = retrieved_memory.get("relevant_patterns", [])
     if any(p for p in patterns):
@@ -59,41 +79,65 @@ def _build_subagent_instruction(
         parts.append(
             f"## 下一步任务（你需要为它制定约束）\n"
             f"**步骤 {_next_order}**：{_next_title}\n"
-            f"{_next_desc}\n\n"
-            f"请结合上述下一步的具体任务内容，在输出末尾的 JSON 中制定针对性的 next_step_instruction，"
-            f"不要写泛泛的约束描述。"
+            f"{_next_desc}"
         )
-        _next_constraint_hint = f"针对步骤{_next_order}（{_next_title}）的具体约束"
-    else:
-        _next_constraint_hint = "null（这是最后一步）"
+
+    is_last_step = next_step is None
+
+    next_step_instruction_hint = "null" if is_last_step else f"""\
+{{
+  "local_constraint": {{
+    "constraint": [
+      {{
+        "constraint_type": "field_presence | value_range | format | dependency",
+        "target": "字段名",
+        "rule": "字段规则"
+      }}
+    ],
+    "priority": "hard | soft"
+  }},
+  "expected_output_schema": {{
+    "fields": ["字段1", "字段2"],
+    "required": ["字段1"]
+  }}
+}}"""
 
     parts.append(f"""## 执行要求
 1. 聚焦当前步骤目标，不执行其他步骤的任务
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
-3. 【重要】优先级规则：context.user 字段（用户实时特征）的优先级**高于**历史记忆中任何 suggestion（包括计划建议和子任务建议）；若 context.user 内部存在冲突条目，以**时间戳最新**的条目为准
-4. 完成执行后，**必须**在输出末尾附加 JSON 块，格式如下：
+3. 【重要】context.user 字段（用户实时特征）优先级高于历史记忆中任何 suggestion
+4. 完成执行后，**必须**在输出末尾附加如下 JSON 块：
 
 ```json
 {{
   "result": "当前步骤执行结果摘要",
-  "next_step_instruction": {{
-    "local_constraint": {{
-      "constraint": "{_next_constraint_hint}",
-      "type": "format|logic|semantic",
-      "check_method": "rule_match|schema_validation|constraint_check",
-      "priority": "hard|soft"
-    }},
-    "expected_output_schema": {{
-      "fields": [],
-      "types": {{}},
-      "required": [],
-      "validation_rules": []
-    }}
-  }}
+  "next_step_instruction": {next_step_instruction_hint}
 }}
 ```
 
-如果这是最后一步，next_step_instruction 字段填 null。""")
+{"如果需要为下一步制定约束，遵循以下规则：" if not is_last_step else "这是最后一步，next_step_instruction 填 null。"}""")
+
+    if not is_last_step:
+        parts.append("""\
+## 约束生成规则（为下一步制定约束时必须遵守）
+
+**Step 1：生成 expected_output_schema（先于 constraint 生成）**
+- fields：列出下一步输出应包含的所有字段
+- required：必须是 fields 的子集
+
+**Step 2：生成 local_constraint**
+- constraint.target 必须 ∈ expected_output_schema.fields
+- 每个 required 字段必须有 field_presence constraint
+- 禁止引用 fields 中未定义的字段
+- 不允许生成模糊约束（如：合理、尽量、适当）
+- 软硬约束比例：hard ≥ 60%，soft ≤ 40%
+- 禁止为低风险任务添加结构性约束
+
+**Step 3：一致性自检**
+- 所有 constraint.target 是否都在 fields 中
+- required 字段是否都有 field_presence constraint
+- 是否存在模糊约束
+如发现不一致，修正后再输出。""")
 
     return "\n\n".join(parts)
 
@@ -110,7 +154,6 @@ async def _run_subagent_step(
     model_name: str,
     user_id: str,
     enabled_kb_ids: Optional[List[str]],
-    failure_reason: Optional[List[Dict]],
     _cumulative_usage: "_UsageTrackingModel",
     _plan_subagent_log_id: str,
     _all_mcp_clients: List,
@@ -118,7 +161,7 @@ async def _run_subagent_step(
     """Execute a single SubAgent step, yield SSE events."""
     instruction = _build_subagent_instruction(
         step, next_step, board, local_constraint, expected_schema,
-        retrieved_memory, failure_reason,
+        retrieved_memory,
     )
 
     logger.info("[SubAgent] START step=%d(%s) id=%s", step.step_order, step.title, step.step_id)

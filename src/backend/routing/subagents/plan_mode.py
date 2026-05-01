@@ -1,18 +1,18 @@
 """Plan mode orchestration — Planner → Warmup → SubAgent+QA pipeline.
 
-Phase 1 (generate): UserProfile + Planner run in parallel, memory queried,
-                    structured step list produced and persisted.
-Phase 2 (execute):  Warmup Agent reads context board (user + plan), sets
-                    global constraints / assumptions / first-step
-                    local constraint.  Steps are then executed sequentially
-                    by SubAgents; each writes its output to the context board
-                    and prepares the next step's local constraint.  A QA
-                    Agent validates every step result.
+Phase 1 (generate): Planner runs, memory queried, structured step list produced
+                    and persisted. Warmup starts async in background.
+Phase 2 (execute):  Await Warmup result (user_goal + global_constraints written
+                    to board). Steps executed sequentially by SubAgents; each
+                    writes output to context board and generates next step's
+                    local constraint. QA validates every step result.
                     Control flow: PASS → next step,
-                                  REDO (up to 2×) → retry current,
-                                  REPLAN → Planner re-plans from failure point,
+                                  REDO (up to 2×) → retry current step,
+                                  REPLAN → Planner re-plans from redo_id,
                                   global_replan > 1 → SSE interrupted, new plan
                                   sent to frontend for user confirmation.
+                    Last step: QA verdict stored as plan_suggestion in memory,
+                               loop exits regardless of verdict.
 """
 
 from __future__ import annotations
@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 _MAX_REDO_PER_STEP = 2      # REDO retries before escalating to REPLAN
 _MAX_LOCAL_REPLAN = 2       # local REPLAN count before triggering full global reset
 
+# ── Warmup task registry (plan_id → asyncio.Task) ────────────────────────────
+# Warmup starts as soon as Phase 1 produces a plan; Phase 2 awaits it.
+_WARMUP_TASKS: Dict[str, asyncio.Task] = {}
+
 # ── Plan store, context board, and shared utility helpers ────────────────────
 from routing.subagents.plan_store import (
     _role_model,
@@ -46,8 +50,7 @@ from routing.subagents.plan_store import (
     _update_stored_step, _replace_stored_steps, _make_plan_dict,
     _StepProxy,
     _make_context_board, _context_board_summary, _build_plan_context_prompt_section,
-    _collect_valid_tool_names, _load_visible_agents, _load_default_plan_prompt,
-    _build_tools_description,
+    _collect_valid_tool_names, _load_visible_agents,
     _prepare_history, _build_file_context, _parse_json_output,
     _extract_summary, _terminate_mcp_processes, _mem0_enabled,
 )
@@ -69,8 +72,6 @@ from routing.subagents.plan_agents import (
     _run_planner,
     _run_warmup,
     _run_qa,
-    _run_qa_final,
-    _run_summary,
 )
 
 # ── Step execution helpers ────────────────────────────────────────────────────
@@ -120,7 +121,12 @@ async def astream_generate_plan(
             yield {"type": "plan_confirm", "plan_id": previous_plan_id}
             return
 
-        # intent == "replan": save rejected plan to memory, then fall through to re-plan
+        # intent == "replan": cancel pending warmup for the rejected plan, save to memory
+        _prev_warmup = _WARMUP_TASKS.pop(previous_plan_id, None)
+        if _prev_warmup and not _prev_warmup.done():
+            _prev_warmup.cancel()
+            logger.info("[Phase1] Warmup task cancelled for rejected plan_id=%s", previous_plan_id)
+
         prev_plan = _get_stored_plan(previous_plan_id)
         if prev_plan:
             _save_task_memory_background(
@@ -140,7 +146,6 @@ async def astream_generate_plan(
         yield {"type": "plan_generating", "delta": "已记录您的建议，正在重新制定计划...\n"}
 
     visible_agents = _load_visible_agents(db, user_id, enabled_agent_ids)
-    tools_desc = _build_tools_description(enabled_mcp_ids, enabled_skill_ids, visible_agents)
 
     board = _make_context_board()
 
@@ -186,9 +191,9 @@ async def astream_generate_plan(
                 user_input=task_description,
                 user_id=user_id,
                 model_name=_role_model("plan", model_name),
-                tools_desc=tools_desc,
                 retrieved_memory=retrieved_memory,
                 board=board,
+                session_messages=session_messages,
             )
         )
 
@@ -293,6 +298,25 @@ async def astream_generate_plan(
             event["agent_name_map"] = agent_name_map
         yield event
 
+        # ── 异步启动 Warmup，与用户确认环节并行执行 ──────────────────────────
+        # board 此时已含 user + plan.steps，retrieved_memory 含相似任务记忆
+        _warmup_memory = {
+            "similar_tasks": retrieved_memory.get("similar_tasks", []),
+            "graph_plans": retrieved_memory.get("graph_plans", []),
+        }
+        _warmup_task = asyncio.create_task(
+            _run_warmup(
+                user_input=task_description,
+                user_id=user_id,
+                model_name=_role_model("warmup", model_name),
+                retrieved_memory=_warmup_memory,
+                board=board,
+                session_messages=session_messages,
+            )
+        )
+        _WARMUP_TASKS[plan_id] = _warmup_task
+        logger.info("[Phase1] Warmup task started in background for plan_id=%s", plan_id)
+
     except Exception as exc:
         logger.exception("Plan generation failed")
         yield {"type": "plan_error", "error": f"计划生成失败: {exc}"}
@@ -391,41 +415,67 @@ async def astream_execute_plan(
     ]
 
     # ── Warmup Phase ──────────────────────────────────────────────────────────
-    logger.info("[Phase2] plan_id=%s user=%s total_steps=%d: starting Warmup Agent",
-                plan_id, user_id, plan_dict["total_steps"])
-    yield {"type": "plan_step_progress", "step_id": None, "delta": "Warmup Agent 正在初始化执行语义空间...\n"}
-
-    warmup_memory = {
-        "similar_tasks": plan_retrieved_memory.get("similar_tasks", []),
-    }
-
+    # Warmup was started in Phase 1 right after plan_generated; wait for it here.
     steps = [_StepProxy(s) for s in plan_dict["steps"]]
-
-    # Warmup 与第一步记忆检索并行执行，节省一次 Milvus 查询等待
-    _step0_desc = steps[0].description or steps[0].title if steps else ""
 
     async def _empty_memory() -> Dict:
         return {"relevant_patterns": []}
 
-    warmup_result, _prefetched_step0_memory = await asyncio.gather(
-        _run_warmup(
-            user_input=plan_dict["task_input"],
-            user_id=user_id,
-            model_name=_role_model("warmup", model_name),
-            retrieved_memory=warmup_memory,
-            board=board,
-        ),
-        _retrieve_step_memory(user_id, _step0_desc) if _step0_desc else _empty_memory(),
-    )
+    _step0_desc = steps[0].description or steps[0].title if steps else ""
+    _warmup_task = _WARMUP_TASKS.pop(plan_id, None)
+
+    if _warmup_task is not None:
+        logger.info("[Phase2] plan_id=%s: waiting for background Warmup task", plan_id)
+        yield {"type": "plan_step_progress", "step_id": None, "delta": "等待 Warmup Agent 完成初始化...\n"}
+        # 并行等待 warmup 完成和第一步记忆预取
+        try:
+            warmup_result, _prefetched_step0_memory = await asyncio.gather(
+                asyncio.wait_for(_warmup_task, timeout=90),
+                _retrieve_step_memory(user_id, _step0_desc) if _step0_desc else _empty_memory(),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[Phase2] Warmup task timed out, proceeding with fallback")
+            warmup_result = None
+            _prefetched_step0_memory = await (_retrieve_step_memory(user_id, _step0_desc) if _step0_desc else _empty_memory())
+        except asyncio.CancelledError:
+            logger.warning("[Phase2] Warmup task was cancelled, proceeding with fallback")
+            warmup_result = None
+            _prefetched_step0_memory = await (_retrieve_step_memory(user_id, _step0_desc) if _step0_desc else _empty_memory())
+        except Exception as _we:
+            logger.warning("[Phase2] Warmup task failed: %s", _we)
+            warmup_result = None
+            _prefetched_step0_memory = await (_retrieve_step_memory(user_id, _step0_desc) if _step0_desc else _empty_memory())
+    else:
+        # Fallback：Phase 1 未产生 warmup task（极少数异常路径），同步执行
+        logger.warning("[Phase2] No background Warmup task found for plan_id=%s, running synchronously", plan_id)
+        yield {"type": "plan_step_progress", "step_id": None, "delta": "Warmup Agent 正在初始化执行语义空间...\n"}
+        _warmup_memory = {
+            "similar_tasks": plan_retrieved_memory.get("similar_tasks", []),
+            "graph_plans": plan_retrieved_memory.get("graph_plans", []),
+        }
+        warmup_result, _prefetched_step0_memory = await asyncio.gather(
+            _run_warmup(
+                user_input=plan_dict["task_input"],
+                user_id=user_id,
+                model_name=_role_model("warmup", model_name),
+                retrieved_memory=_warmup_memory,
+                board=board,
+                session_messages=session_messages,
+            ),
+            _retrieve_step_memory(user_id, _step0_desc) if _step0_desc else _empty_memory(),
+        )
 
     if warmup_result is None:
         warmup_result = {
-            "refined_user_goal": user_goal,
+            "user_goal": user_goal,
             "global_constraints": [],
-            "assumptions": [],
             "next_step_instruction": {"local_constraint": {}, "expected_output_schema": {}},
         }
         board["plan"]["user_goal"] = user_goal
+    else:
+        # warmup 写入的是 Phase 1 的 board；Phase 2 使用独立 board，需同步写入
+        board["plan"]["user_goal"] = warmup_result.get("user_goal") or user_goal
+        board["check"]["global_constraints"] = warmup_result.get("global_constraints", [])
 
     first_instr = warmup_result.get("next_step_instruction") or {}
     current_local_constraint = first_instr.get("local_constraint", {})
@@ -498,7 +548,6 @@ async def astream_execute_plan(
 
             # ── REDO loop ──────────────────────────────────────────────────────
             redo_count = 0
-            redo_failure_reason: Optional[List[Dict]] = None
             step_text = ""
             step_tool_calls: List[Dict] = []
             qa_verdict = "PASS"
@@ -526,7 +575,6 @@ async def astream_execute_plan(
                     model_name=_role_model("subagent", model_name),
                     user_id=user_id,
                     enabled_kb_ids=enabled_kb_ids,
-                    failure_reason=redo_failure_reason,
                     _cumulative_usage=_cumulative_usage,
                     _plan_subagent_log_id=_plan_subagent_log_id,
                     _all_mcp_clients=_all_mcp_clients,
@@ -547,6 +595,7 @@ async def astream_execute_plan(
                     "activity": "qa_checking",
                     "label": "QA 进行检查",
                 }
+                _is_last_step = (step_idx == len(steps) - 1)
                 qa_data = await _run_qa(
                     step=step,
                     result=narrative_text or step_text,
@@ -555,6 +604,7 @@ async def astream_execute_plan(
                     expected_schema=current_expected_schema,
                     model_name=_role_model("qa", model_name),
                     user_id=user_id,
+                    is_last_step=_is_last_step,
                 )
                 qa_verdict = qa_data.get("verdict", "PASS")
 
@@ -564,24 +614,30 @@ async def astream_execute_plan(
                     "verdict": qa_verdict,
                 }
 
+                # 最后一步：无论 verdict 如何都不触发重做或重规划，直接退出循环
+                if _is_last_step:
+                    _final_plan_suggestion = qa_data.get("plan_suggestion", "")
+                    if _final_plan_suggestion:
+                        board["plan"]["plan_suggestion"] = _final_plan_suggestion
+                    board["plan"]["suggestion"] = None
+                    break
+
                 if qa_verdict == "PASS":
+                    board["plan"]["suggestion"] = None
                     break
 
                 if qa_verdict == "REDO":
                     redo_count += 1
-                    redo_failure_reason = qa_data.get("failure_reason", [])
                     logger.warning("[QA] REDO step=%d redo=%d", step.step_order, redo_count)
                     _new_suggestions = "; ".join(
-                        r.get("suggestion", "") for r in redo_failure_reason if r.get("suggestion")
+                        r.get("suggestion", "") for r in qa_data.get("failure_reason", []) if r.get("suggestion")
                     )
-                    for board_step in board["plan"]["steps"]:
-                        if board_step["step_id"] == step.step_id:
-                            existing = board_step.get("suggestion") or ""
-                            board_step["suggestion"] = (existing + "; " + _new_suggestions).strip("; ") if _new_suggestions else existing
-                            break
+                    # 写入 board["plan"]["suggestion"]，供 subagent 重做时读取
+                    board["plan"]["suggestion"] = _new_suggestions or "（无建议）"
                     if redo_count >= _MAX_REDO_PER_STEP:
                         qa_verdict = "REPLAN"
                         logger.warning("[QA] REDO limit reached → escalate to REPLAN")
+                        board["plan"]["redo_id"] = step.step_order
                         break
                     yield {"type": "plan_step_progress", "step_id": step.step_id,
                            "delta": f"\nQA 验证未通过，正在重试 ({redo_count}/{_MAX_REDO_PER_STEP})...\n"}
@@ -597,6 +653,14 @@ async def astream_execute_plan(
                 local_replan_count += 1
                 logger.warning("[plan-exec] REPLAN triggered at step %d (local_count=%d, global_reset=%d)",
                                step.step_order, local_replan_count, global_reset_count)
+
+                # 确保 board 中记录了 redo_id 和 suggestion（QA 直接判断 REPLAN 时在此写入）
+                if board["plan"].get("redo_id", -1) == -1:
+                    _replan_suggestions = "; ".join(
+                        r.get("suggestion", "") for r in qa_data.get("failure_reason", []) if r.get("suggestion")
+                    )
+                    board["plan"]["redo_id"] = step.step_order
+                    board["plan"]["suggestion"] = _replan_suggestions or "（无建议）"
 
                 yield {
                     "type": "plan_step_agent_activity",
@@ -641,11 +705,6 @@ async def astream_execute_plan(
                     }
 
                     # 重新进入准备阶段：user_profile + planner 并发执行，生成新计划
-                    replan_ctx = {
-                        "complete": True,
-                        "failed_step": step.step_order,
-                        "failure_reason": qa_data.get("failure_reason", []),
-                    }
                     _reset_board = _make_context_board()
                     replan_memory, _ = await asyncio.gather(
                         _retrieve_plan_memory(user_id, plan_dict["task_input"]),
@@ -660,10 +719,9 @@ async def astream_execute_plan(
                         user_input=plan_dict["task_input"],
                         user_id=user_id,
                         model_name=_role_model("plan", model_name),
-                        tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids, _load_visible_agents(db, user_id, enabled_agent_ids)),
                         retrieved_memory=replan_memory,
                         board=_reset_board,
-                        replan_context=replan_ctx,
+                        session_messages=session_messages,
                     )
 
                     new_steps = []
@@ -739,19 +797,14 @@ async def astream_execute_plan(
 
                     # 局部 REPLAN 复用 Phase 1 检索到的记忆，避免重复 Milvus 查询
                     replan_memory = plan_retrieved_memory or await _retrieve_plan_memory(user_id, plan_dict["task_input"])
-                    replan_ctx = {
-                        "complete": False,
-                        "failed_step": step.step_order,
-                        "failure_reason": qa_data.get("failure_reason", []),
-                    }
+                    # board["plan"]["redo_id"] 和 "suggestion" 已在进入 REPLAN 处理块时写入
                     new_plan_data = await _run_planner(
                         user_input=plan_dict["task_input"],
                         user_id=user_id,
                         model_name=_role_model("plan", model_name),
-                        tools_desc=_build_tools_description(enabled_mcp_ids, enabled_skill_ids, _load_visible_agents(db, user_id, enabled_agent_ids)),
                         retrieved_memory=replan_memory,
                         board=board,
-                        replan_context=replan_ctx,
+                        session_messages=session_messages,
                     )
 
                     if new_plan_data and new_plan_data.get("steps"):
@@ -922,27 +975,11 @@ async def astream_execute_plan(
             final_status = "cancelled"
 
         overall_summary = f"共 {len(steps)} 个步骤，完成 {completed_count} 个"
-
-        # QA_final 单独运行（轻量 minimax 模型，通常 <5s），
-        # Summary Agent 移至 plan_complete 事件发出后异步执行，不阻塞用户响应
-        yield {"type": "plan_step_progress", "step_id": None, "delta": "正在整合结果...\n"}
-        _qa_model = _role_model("qa", model_name)
-        _summary_model = _role_model("summary", model_name)
-
-        qa_final = await _run_qa_final(
-            board=board,
-            final_output=last_step_text,
-            model_name=_qa_model,
-            user_id=user_id,
-        )
         task_success = final_status == "completed"
 
-        _final_plan_suggestion = qa_final.get("plan_suggestion", "")
-        if _final_plan_suggestion:
-            board["plan"]["plan_suggestion"] = _final_plan_suggestion
-
-        # 用 last_step_text 作为初始 result_text，先发送 plan_complete 响应给用户
-        # Summary Agent 在后台异步生成精炼摘要，完成后通过 plan_summary_updated 事件推送
+        # 最后一步 subagent 本身即为总结性 agent，其输出直接作为最终结果
+        # plan_suggestion 已在最后一步 QA 时写入 board["plan"]["plan_suggestion"]
+        _final_plan_suggestion = board["plan"].get("plan_suggestion", "")
         result_text = last_step_text
 
         _update_stored_plan(
@@ -984,26 +1021,8 @@ async def astream_execute_plan(
             duration_ms=int((_time.monotonic() - _plan_run_start) * 1000),
         )
 
-        # ── 后台异步：Summary 精炼 + 记忆写入，不阻塞用户响应 ─────────────────
+        # ── 后台异步：记忆写入，不阻塞用户响应 ──────────────────────────────────
         async def _background_finalize() -> None:
-            try:
-                refined = await _run_summary(
-                    board=board,
-                    step_summaries=step_summaries,
-                    last_step_output=last_step_text,
-                    model_name=_summary_model,
-                    user_id=user_id,
-                )
-                if refined and refined != last_step_text:
-                    _update_stored_plan(
-                        plan_id,
-                        result_summary=refined[:2000],
-                    )
-                    logger.info("[Summary] background refined result written to plan store")
-            except Exception as _exc:
-                logger.debug("[Summary] background finalize failed (non-critical): %s", _exc)
-                refined = last_step_text
-
             _save_task_memory_background(
                 user_id=user_id,
                 user_goal=board["plan"].get("user_goal", ""),
@@ -1011,7 +1030,7 @@ async def astream_execute_plan(
                 success=bool(task_success),
                 quality_score=1.0 if task_success else 0.5,
                 failure_reason="",
-                final_solution_summary=(refined or last_step_text)[:500],
+                final_solution_summary=last_step_text[:500],
                 forced=False,
                 key_constraints=[
                     c.get("constraint", "")

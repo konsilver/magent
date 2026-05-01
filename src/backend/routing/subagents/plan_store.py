@@ -181,11 +181,12 @@ def _make_context_board() -> Dict[str, Any]:
         "plan": {
             "user_goal": None,
             "steps": [],
+            "redo_id": -1,
+            "suggestion": None,
             "plan_suggestion": None,
         },
         "check": {
             "global_constraints": [],
-            "assumptions": [],
         },
     }
 
@@ -243,7 +244,7 @@ def _build_plan_context_prompt_section(
         f"- 步骤描述: {step.description}",
     ]
 
-    local_constraint = getattr(step, "local_constraint", None) or board.get("plan", {}).get("plan_suggestion")
+    local_constraint = getattr(step, "local_constraint", None)
     if local_constraint:
         lines += ["", "### 本步骤局部约束", str(local_constraint)]
 
@@ -293,55 +294,6 @@ def _load_visible_agents(
     except Exception as exc:
         logger.debug("[plan_store] _load_visible_agents failed: %s", exc)
         return []
-
-
-def _load_default_plan_prompt(available_tools_desc: str = "（暂无工具信息）") -> str:
-    """Load planner prompt template from file, or return a minimal inline fallback."""
-    _PROMPT_PATH = __import__("os").path.join(
-        __import__("os").path.dirname(__file__),
-        "..", "..", "prompts", "prompt_text", "v4", "system", "90_plan_mode.system.md",
-    )
-    try:
-        with open(_PROMPT_PATH, encoding="utf-8") as f:
-            return f.read()
-    except Exception:
-        return (
-            "你是一个任务规划助手。请将用户输入的任务拆解为清晰的线性步骤。\n"
-            "每个步骤应包含 title 和 description。\n"
-            "输出格式为 JSON：\n"
-            '{"title": "...", "description": "...", "steps": [{"title": "...", "description": "..."}]}'
-        )
-
-
-def _build_tools_description(
-    enabled_mcp_ids: Optional[List[str]],
-    enabled_skill_ids: Optional[List[str]],
-    visible_agents: List[Dict[str, Any]],
-) -> str:
-    """Build a human-readable tools/skills/agents description for the Planner."""
-    sections: List[str] = []
-
-    if enabled_mcp_ids:
-        try:
-            from core.llm.subagent_tool import _get_tools_desc
-            mcp_desc = _get_tools_desc(enabled_mcp_ids)
-            if mcp_desc:
-                sections.append("### MCP 工具\n" + mcp_desc)
-        except Exception:
-            pass
-
-    if enabled_skill_ids:
-        skill_lines = [f"- {sid}" for sid in enabled_skill_ids]
-        sections.append("### 技能（Skills）\n" + "\n".join(skill_lines))
-
-    if visible_agents:
-        agent_lines = [
-            f"- {a.get('name', a.get('agent_id', '?'))}: {a.get('description', '')}"
-            for a in visible_agents
-        ]
-        sections.append("### 子智能体（填入 expected_agents 字段）\n" + "\n".join(agent_lines))
-
-    return "\n\n".join(sections) if sections else "（当前无可用工具或技能）"
 
 
 # ── Text/JSON utilities ───────────────────────────────────────────────────────
