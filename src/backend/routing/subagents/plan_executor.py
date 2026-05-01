@@ -165,13 +165,15 @@ async def _run_subagent_step(
 
         if not _use_pool:
             _create_t0 = _time.monotonic()
+            # 非隔离模式（isolated=False）可从 MCP pool 缓存直接构建 toolkit，
+            # 避免 isolated=True 时重新 spawn MCP 子进程的高延迟
             agent, mcp_clients = await create_agent_executor(
                 enabled_mcp_ids=None,
                 enabled_skill_ids=None,
                 enabled_kb_ids=enabled_kb_ids,
                 current_user_id=user_id,
                 model_name=model_name,
-                isolated=True,
+                isolated=False,
                 max_iters=_step_max_iters,
             )
             logger.info("[SubAgent] step=%d created fresh agent in %.0fms",

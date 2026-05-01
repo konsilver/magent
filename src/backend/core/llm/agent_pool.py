@@ -26,7 +26,8 @@ from typing import AsyncIterator, Optional
 
 logger = logging.getLogger(__name__)
 
-_POOL_SIZE_DEFAULT = 3
+import os as _os
+_POOL_SIZE_DEFAULT = int(_os.environ.get("AGENT_POOL_SIZE", "5"))
 
 
 class _PooledAgent:
@@ -235,7 +236,7 @@ class AgentPool:
         asyncio.Lock has no acquire_nowait() — we use locked() as a fast-path
         guard and then attempt a zero-timeout acquire via wait_for.
         """
-        deadline = asyncio.get_event_loop().time() + 10.0
+        deadline = asyncio.get_event_loop().time() + 30.0
 
         while True:
             for slot in self._agents:

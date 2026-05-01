@@ -189,12 +189,40 @@ async def _create_bare_llm_agent(
     _log = logging.getLogger(__name__)
     _t0 = time.monotonic()
 
-    from core.config.model_config import ModelConfigService
+    from core.config.model_config import ModelConfigService, ResolvedModelConfig
     from core.llm.context_manager import resolve_model_context_window
 
     svc = ModelConfigService.get_instance()
-    role = model_name or "main_agent"
-    cfg = svc.resolve(role) or svc.resolve("main_agent")
+    cfg = None
+    if model_name:
+        # Try as role key first (e.g. "plan_agent"), then as model name via DB lookup
+        cfg = svc.resolve(model_name)
+        if cfg is None:
+            # model_name is a concrete model name (e.g. "qwen3_80b") — find matching provider
+            try:
+                from core.db.engine import SessionLocal
+                from core.db.models import ModelProvider
+                with SessionLocal() as _db:
+                    provider = _db.query(ModelProvider).filter(
+                        ModelProvider.model_name == model_name,
+                        ModelProvider.is_active == True,
+                        ModelProvider.provider_type == "chat",
+                    ).first()
+                    if provider:
+                        extra = dict(provider.extra_config or {})
+                        cfg = ResolvedModelConfig(
+                            base_url=provider.base_url,
+                            api_key=provider.api_key,
+                            model_name=provider.model_name,
+                            temperature=float(extra.get("temperature", 0.6)),
+                            max_tokens=int(extra.get("max_tokens", 8192)),
+                            timeout=int(extra.get("timeout", 120)),
+                            extra={},
+                        )
+            except Exception as _exc:
+                _log.debug("[factory-bare] provider lookup by model_name failed: %s", _exc)
+    if cfg is None:
+        cfg = svc.resolve("main_agent")
 
     if cfg:
         model = make_chat_model(
@@ -515,7 +543,7 @@ async def create_agent_executor(
             _log.info("[factory] +%s subagent tool registered (%d agents)", _elapsed(), len(visible_subagents))
 
     # Create model (streaming enabled for SSE)
-    # Mode-specific model roles: plan_agent / code_exec → fallback to main_agent
+    # Priority: code_exec/plan_agent role > explicit model_name > main_agent fallback
     default_model = None
     _mode_role = "code_exec" if code_exec_enabled else ("plan_agent" if plan_mode else None)
     if _mode_role:
@@ -535,6 +563,46 @@ async def create_agent_executor(
                 _log.info("[factory] using %s model: %s", _mode_role, _mode_cfg.model_name)
         except Exception as exc:
             _log.warning("[factory] %s model resolve failed: %s, falling back to main_agent", _mode_role, exc)
+    if default_model is None and model_name:
+        # Caller specified a concrete model name (e.g. from ROLE_SUBAGENT_MODEL env var)
+        # Try role key first, then direct DB provider lookup by model_name
+        try:
+            from core.config.model_config import ModelConfigService, ResolvedModelConfig
+            from core.db.engine import SessionLocal as _SL
+            from core.db.models import ModelProvider as _MP
+            _svc2 = ModelConfigService.get_instance()
+            _named_cfg = _svc2.resolve(model_name)
+            if _named_cfg is None:
+                with _SL() as _db2:
+                    _prov = _db2.query(_MP).filter(
+                        _MP.model_name == model_name,
+                        _MP.is_active == True,
+                        _MP.provider_type == "chat",
+                    ).first()
+                    if _prov:
+                        _extra = dict(_prov.extra_config or {})
+                        _named_cfg = ResolvedModelConfig(
+                            base_url=_prov.base_url,
+                            api_key=_prov.api_key,
+                            model_name=_prov.model_name,
+                            temperature=float(_extra.get("temperature", 0.6)),
+                            max_tokens=int(_extra.get("max_tokens", 8192)),
+                            timeout=int(_extra.get("timeout", 120)),
+                            extra={},
+                        )
+            if _named_cfg:
+                default_model = make_chat_model(
+                    model=_named_cfg.model_name,
+                    temperature=_named_cfg.temperature,
+                    max_tokens=_named_cfg.max_tokens,
+                    timeout=_named_cfg.timeout,
+                    base_url=_named_cfg.base_url,
+                    api_key=_named_cfg.api_key,
+                    stream=True,
+                )
+                _log.info("[factory] using model_name=%s resolved to %s", model_name, _named_cfg.model_name)
+        except Exception as exc:
+            _log.warning("[factory] model_name=%s resolve failed: %s", model_name, exc)
     if default_model is None:
         default_model = get_default_model(cfg.model, stream=True)
 
