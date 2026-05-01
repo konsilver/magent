@@ -155,7 +155,7 @@ async def graph_search(
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: memory.search(query, user_id=user_id, limit=limit),
+            lambda: memory.search(query, filters={"user_id": user_id}, top_k=limit),
         )
         if isinstance(result, dict):
             relations = result.get("relations", [])
