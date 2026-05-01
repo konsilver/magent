@@ -34,6 +34,7 @@ from routing.workflow import WorkflowResult, run_chat_workflow, astream_chat_wor
 from routing.subagents.plan_mode import astream_generate_plan, astream_execute_plan
 from core.services.plan_service import PlanService
 from core.llm.message_compat import strip_thinking
+from core.llm.memory import MEM0_ENABLED as _MEM0_ENABLED
 from core.infra.logging import get_logger
 from api.routes.v1.artifacts import extract_file_refs, infer_artifact_type, resolve_artifact_storage_key
 
@@ -901,8 +902,8 @@ async def chat_stream(
 
     _user_svc = UserService(db)
     _user_settings = _user_svc.get_user_settings(db_user_id)
-    _memory_enabled = bool(_user_settings.get("memory_enabled", False))
-    _memory_write_enabled = bool(_user_settings.get("memory_write_enabled", False))
+    _memory_enabled = bool(_user_settings.get("memory_enabled", _MEM0_ENABLED))
+    _memory_write_enabled = bool(_user_settings.get("memory_write_enabled", _MEM0_ENABLED))
     _reranker_enabled = bool(_user_settings.get("reranker_enabled", False))
 
     # ── Validate agent_id if present ──
@@ -1396,8 +1397,8 @@ async def regenerate_message(
     session_messages.append({"role": "user", "content": effective_msg})
     context = _build_ctx(
         regen_request, db_user_id, enabled_skills, enabled_agents, enabled_mcps,
-        memory_enabled=bool(_user_settings.get("memory_enabled", False)),
-        memory_write_enabled=bool(_user_settings.get("memory_write_enabled", False)),
+        memory_enabled=bool(_user_settings.get("memory_enabled", _MEM0_ENABLED)),
+        memory_write_enabled=bool(_user_settings.get("memory_write_enabled", _MEM0_ENABLED)),
         reranker_enabled=bool(_user_settings.get("reranker_enabled", False)),
     )
 
@@ -1452,8 +1453,8 @@ async def edit_and_resend(
     )
     context = _build_ctx(
         edit_request, db_user_id, enabled_skills, enabled_agents, enabled_mcps,
-        memory_enabled=bool(_user_settings.get("memory_enabled", False)),
-        memory_write_enabled=bool(_user_settings.get("memory_write_enabled", False)),
+        memory_enabled=bool(_user_settings.get("memory_enabled", _MEM0_ENABLED)),
+        memory_write_enabled=bool(_user_settings.get("memory_write_enabled", _MEM0_ENABLED)),
         reranker_enabled=bool(_user_settings.get("reranker_enabled", False)),
     )
 

@@ -56,9 +56,10 @@ async def get_memory_settings(
     """获取用户记忆 / 重排开关设置。"""
     svc = UserService(db)
     settings = svc.get_user_settings(str(user.user_id))
+    _mem_default = MEM0_ENABLED
     return success_response(data={
-        "memory_enabled": settings.get("memory_enabled", False),
-        "memory_write_enabled": settings.get("memory_write_enabled", False),
+        "memory_enabled": settings.get("memory_enabled", _mem_default),
+        "memory_write_enabled": settings.get("memory_write_enabled", _mem_default),
         "mem0_available": MEM0_ENABLED,
         "reranker_enabled": settings.get("reranker_enabled", False),
         "reranker_available": _is_reranker_available(),
