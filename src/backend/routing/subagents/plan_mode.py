@@ -1019,6 +1019,12 @@ async def astream_execute_plan(
         records = _cumulative_usage.usage_records
         total_prompt = sum(r.get("prompt_tokens", 0) for r in records)
         total_completion = sum(r.get("completion_tokens", 0) for r in records)
+        logger.info(
+            "[plan-exec] USAGE SUMMARY plan_id=%s status=%s steps=%d llm_calls=%d "
+            "prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+            plan_id, final_status, len(steps), len(records),
+            total_prompt, total_completion, total_prompt + total_completion,
+        )
         exec_usage = {
             "prompt_tokens": total_prompt,
             "completion_tokens": total_completion,

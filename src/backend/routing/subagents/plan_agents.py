@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from core.llm.agent_factory import create_agent_executor
 from core.llm.mcp_manager import close_clients
+from routing.streaming import _UsageTrackingModel
 from routing.subagents.plan_store import (
     _role_model,
     _parse_json_output,
@@ -34,13 +35,17 @@ async def _call_llm_agent(
 ) -> str:
     """Call a tool-disabled agent and return stripped text output."""
     _t0 = _time.monotonic()
-    logger.info("[%s] START model=%s user=%s timeout=%ds", _agent_label, model_name, user_id, timeout)
+    _prompt_chars = len(prompt)
+    logger.info("[%s] START model=%s user=%s prompt_chars=%d timeout=%ds",
+                _agent_label, model_name, user_id, _prompt_chars, timeout)
     agent, mcp_clients = await create_agent_executor(
         disable_tools=True,
         model_name=model_name,
         current_user_id=user_id,
         isolated=True,
     )
+    _usage_proxy = _UsageTrackingModel(agent.model)
+    agent.model = _usage_proxy
     try:
         from agentscope.message import Msg
         user_msg = Msg(name="user", content=prompt, role="user")
@@ -65,7 +70,12 @@ async def _call_llm_agent(
             text = str(reply)
         result = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         _elapsed = (_time.monotonic() - _t0) * 1000
-        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d", _agent_label, _elapsed, len(result))
+        _records = _usage_proxy.usage_records
+        _prompt_tok = sum(r.get("prompt_tokens", 0) for r in _records)
+        _completion_tok = sum(r.get("completion_tokens", 0) for r in _records)
+        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+                    _agent_label, _elapsed, len(result),
+                    _prompt_tok, _completion_tok, _prompt_tok + _completion_tok)
         return result
     except asyncio.TimeoutError:
         logger.warning("[%s] TIMEOUT after %ds", _agent_label, timeout)

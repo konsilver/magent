@@ -146,11 +146,17 @@ async def _run_subagent_step(
         retrieved_memory,
     )
 
-    logger.info("[SubAgent] START step=%d(%s) id=%s", step.step_order, step.title, step.step_id)
+    logger.info("[SubAgent] START step=%d(%s) id=%s model=%s", step.step_order, step.title, step.step_id, model_name)
 
     step_text = ""
     step_tool_calls: List[Dict] = []
     _step_start = _time.monotonic()
+    # Snapshot cumulative usage before this step so we can compute per-step delta
+    _usage_before = sum(
+        r.get("prompt_tokens", 0) + r.get("completion_tokens", 0)
+        for r in _cumulative_usage.usage_records
+    )
+    _calls_before = len(_cumulative_usage.usage_records)
 
     _step_log_id = await log_writer.start_subagent_log({
         "subagent_name": f"plan_mode:step_{step.step_order}",
@@ -180,9 +186,12 @@ async def _run_subagent_step(
                 _pooled.reset()
                 agent = _pooled.agent
                 agent.max_iters = _step_max_iters
+                # Inject model_name into context so dynamic_model hook uses the right model
+                if hasattr(agent, "_jx_context") and agent._jx_context is not None:
+                    agent._jx_context.model_name = model_name
                 _pool_slot = _pooled
-                logger.info("[SubAgent] step=%d acquired from pool in %.0fms",
-                            step.step_order, (_time.monotonic() - _acquire_t0) * 1000)
+                logger.info("[SubAgent] step=%d acquired from pool in %.0fms model=%s",
+                            step.step_order, (_time.monotonic() - _acquire_t0) * 1000, model_name)
             except Exception as _pe:
                 logger.warning("[SubAgent] step=%d pool acquire failed (%s), falling back to create_agent_executor",
                                step.step_order, _pe)
@@ -339,9 +348,18 @@ async def _run_subagent_step(
             step_tool_calls = _collected_calls
 
             _exec_elapsed = (_time.monotonic() - _step_start) * 1000
-            logger.info("[SubAgent] step=%d(%s) DONE elapsed=%.0fms tool_calls=%d output_chars=%d",
-                        step.step_order, step.title, _exec_elapsed,
-                        len(step_tool_calls), len(step_text))
+            _step_records = _cumulative_usage.usage_records[_calls_before:]
+            _step_prompt = sum(r.get("prompt_tokens", 0) for r in _step_records)
+            _step_completion = sum(r.get("completion_tokens", 0) for r in _step_records)
+            _step_total = _step_prompt + _step_completion
+            _step_llm_calls = len(_step_records)
+            logger.info(
+                "[SubAgent] step=%d(%s) DONE elapsed=%.0fms tool_calls=%d output_chars=%d "
+                "llm_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+                step.step_order, step.title, _exec_elapsed,
+                len(step_tool_calls), len(step_text),
+                _step_llm_calls, _step_prompt, _step_completion, _step_total,
+            )
             if step_tool_calls:
                 tool_names = [tc.get("name", "?") for tc in step_tool_calls[:5]]
                 logger.info("[SubAgent] step=%d tools used: %s", step.step_order, tool_names)

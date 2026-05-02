@@ -38,11 +38,12 @@ class ModelContext(BaseModel):
 _main_model = None
 _main_fast_model = None
 _cached_version: int = -1
+_named_model_cache: Dict[str, Any] = {}
 
 
 def _check_version():
     """Invalidate cached model instances when ModelConfigService version changes."""
-    global _main_model, _main_fast_model, _cached_version
+    global _main_model, _main_fast_model, _cached_version, _named_model_cache
     try:
         from core.config.model_config import ModelConfigService
         current = ModelConfigService.get_instance().version
@@ -51,6 +52,7 @@ def _check_version():
     if current != _cached_version:
         _main_model = None
         _main_fast_model = None
+        _named_model_cache = {}
         _cached_version = current
 
 
@@ -68,6 +70,53 @@ def _get_main_model(fast: bool = False):
     return _main_model
 
 
+def _get_named_model(model_name: str):
+    """Resolve and cache a model by name (concrete model_name, not role key)."""
+    _check_version()
+    if model_name in _named_model_cache:
+        return _named_model_cache[model_name]
+    try:
+        from core.config.model_config import ModelConfigService, ResolvedModelConfig
+        from core.db.engine import SessionLocal
+        from core.db.models import ModelProvider
+        from core.llm.chat_models import make_chat_model
+        svc = ModelConfigService.get_instance()
+        cfg = svc.resolve(model_name)
+        if cfg is None:
+            with SessionLocal() as _db:
+                prov = _db.query(ModelProvider).filter(
+                    ModelProvider.model_name == model_name,
+                    ModelProvider.is_active == True,
+                    ModelProvider.provider_type == "chat",
+                ).first()
+                if prov:
+                    extra = dict(prov.extra_config or {})
+                    cfg = ResolvedModelConfig(
+                        base_url=prov.base_url,
+                        api_key=prov.api_key,
+                        model_name=prov.model_name,
+                        temperature=float(extra.get("temperature", 0.6)),
+                        max_tokens=int(extra.get("max_tokens", 8192)),
+                        timeout=int(extra.get("timeout", 120)),
+                        extra={},
+                    )
+        if cfg:
+            model = make_chat_model(
+                model=cfg.model_name,
+                temperature=cfg.temperature,
+                max_tokens=cfg.max_tokens,
+                timeout=cfg.timeout,
+                base_url=cfg.base_url,
+                api_key=cfg.api_key,
+                stream=True,
+            )
+            _named_model_cache[model_name] = model
+            return model
+    except Exception as exc:
+        logger.warning("[hooks] _get_named_model(%s) failed: %s", model_name, exc)
+    return None
+
+
 def make_dynamic_model_hook():
     """Create a pre_reply hook that swaps the agent's model based on context."""
 
@@ -75,6 +124,13 @@ def make_dynamic_model_hook():
         ctx = getattr(agent, "_jx_context", None)
         if ctx is None:
             return
+        # If a specific model was requested (e.g. minimax-m27 for simple steps), use it
+        override_name = getattr(ctx, "model_name", "")
+        if override_name:
+            named = _get_named_model(override_name)
+            if named is not None:
+                agent.model = named
+                return
         fast = not getattr(ctx, "enable_thinking", True)
         model = _get_main_model(fast=fast)
         agent.model = model
