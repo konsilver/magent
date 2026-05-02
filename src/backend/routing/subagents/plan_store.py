@@ -29,6 +29,17 @@ def _role_model(role: str, fallback: str) -> str:
     return role_val if role_val else fallback
 
 
+def _subagent_model(complexity: str, fallback: str) -> str:
+    """Return model name for a subagent step based on its complexity.
+
+    simple → subagent_simple role (fast model for lightweight steps)
+    complex / anything else → subagent role (full model)
+    """
+    if complexity == "simple":
+        return _role_model("subagent_simple", fallback)
+    return _role_model("subagent", fallback)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # In-memory Plan Store
 # ═══════════════════════════════════════════════════════════════════════════════

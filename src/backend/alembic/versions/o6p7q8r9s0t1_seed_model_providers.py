@@ -80,22 +80,34 @@ _PROVIDERS = [
         "extra_config": {"temperature": 0.6},
         "is_active": False,
     },
+    {
+        "provider_id": "b3c4d5e6-f7a8-4901-c2d3-e4f5a6b7c8d9",
+        "display_name": "MiniMax-M27 Fast (简易步骤)",
+        "provider_type": "chat",
+        "base_url": "http://47.96.14.202:1029/v1",
+        "api_key": "minimax-m27",
+        "model_name": "minimax-m27",
+        "extra_config": {"max_tokens": 8192, "temperature": 0.6},
+        "is_active": True,
+    },
 ]
 
 # Role assignments:
-#   glm-5       → main_agent, plan_agent, chart, code_exec
-#   minimax-m27 → memory, summarizer, followup (lightweight, ~1-10s vs 30-80s)
+#   glm-5              → main_agent, plan_agent, chart, code_exec, subagent (complex steps)
+#   minimax-m27 (内网) → memory, summarizer, followup (lightweight, ~1-10s vs 30-80s)
+#   minimax-m27 (快速) → subagent_simple (simple plan steps, faster endpoint)
 #   embedding / reranker → dedicated models
 _ROLE_ASSIGNMENTS = [
-    {"role_key": "main_agent",  "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
-    {"role_key": "plan_agent",  "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
-    {"role_key": "memory",      "provider_id": "a2b3c4d5-e6f7-4890-b1c2-d3e4f5a6b7c8"},
-    {"role_key": "summarizer",  "provider_id": "a2b3c4d5-e6f7-4890-b1c2-d3e4f5a6b7c8"},
-    {"role_key": "followup",    "provider_id": "a2b3c4d5-e6f7-4890-b1c2-d3e4f5a6b7c8"},
-    {"role_key": "chart",       "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
-    {"role_key": "code_exec",   "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
-    {"role_key": "embedding",   "provider_id": "e918986c-205c-4d69-8c34-a7d014b7a5f4"},
-    {"role_key": "reranker",    "provider_id": "340a36f2-00ad-42e4-8919-9104a3eaea13"},
+    {"role_key": "main_agent",       "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
+    {"role_key": "plan_agent",       "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
+    {"role_key": "memory",           "provider_id": "a2b3c4d5-e6f7-4890-b1c2-d3e4f5a6b7c8"},
+    {"role_key": "summarizer",       "provider_id": "a2b3c4d5-e6f7-4890-b1c2-d3e4f5a6b7c8"},
+    {"role_key": "followup",         "provider_id": "a2b3c4d5-e6f7-4890-b1c2-d3e4f5a6b7c8"},
+    {"role_key": "chart",            "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
+    {"role_key": "code_exec",        "provider_id": "7e20bf3b-b503-47f1-be0f-b4c65dccd78a"},
+    {"role_key": "embedding",        "provider_id": "e918986c-205c-4d69-8c34-a7d014b7a5f4"},
+    {"role_key": "reranker",         "provider_id": "340a36f2-00ad-42e4-8919-9104a3eaea13"},
+    {"role_key": "subagent_simple",  "provider_id": "b3c4d5e6-f7a8-4901-c2d3-e4f5a6b7c8d9"},
 ]
 
 

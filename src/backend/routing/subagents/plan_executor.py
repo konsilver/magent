@@ -35,18 +35,9 @@ def _build_subagent_instruction(
     parts = []
 
     parts.append(f"## context 黑板（共享状态）\n{_context_board_summary(board)}")
-    parts.append(f"## 我的当前任务\n步骤 {step.step_order}")
 
-    # 提示 subagent 可参考已完成步骤的输出
-    completed_outputs = [
-        s for s in board.get("plan", {}).get("steps", [])
-        if s.get("output") is not None and s.get("step_id") != step.step_id
-    ]
-    if completed_outputs:
-        parts.append(
-            "## 说明\n"
-            "context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，如有必要可参考。"
-        )
+    step_desc = step.description or getattr(step, "title", "")
+    parts.append(f"## 我的当前任务\n步骤 {step.step_order}：{step_desc}")
 
     if local_constraint:
         parts.append(f"## 上个 Agent 为我制定的局部约束\n{json.dumps(local_constraint, ensure_ascii=False, indent=2)}")
@@ -68,7 +59,8 @@ def _build_subagent_instruction(
 
     if next_step:
         _next_order = getattr(next_step, "step_order", "?")
-        parts.append(f"## 下一步任务（你需要为它制定约束）\n步骤 {_next_order}")
+        _next_desc = getattr(next_step, "description", "") or getattr(next_step, "title", "")
+        parts.append(f"## 下一步任务（你需要为它制定约束）\n步骤 {_next_order}：{_next_desc}")
 
     is_last_step = next_step is None
 
@@ -94,8 +86,9 @@ def _build_subagent_instruction(
 1. 聚焦当前步骤目标，不执行其他步骤的任务
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
 3. 【重要】context.user 字段（用户实时特征）优先级高于历史记忆中任何 suggestion
-4. 【输出纪律】**禁止在回复中输出任何思考过程、推理步骤或自我分析**。直接输出最终结论和内容，不要写"我需要…"、"根据规则…"、"让我…"、"首先…其次…"等过程性文字。
-5. 完成执行后，**必须**在输出末尾附加如下 JSON 块：
+4. 【参考前序输出】context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，可结合这些输出更好地完成当前任务
+5. 【输出纪律】**禁止在回复中输出任何思考过程、推理步骤或自我分析**。直接输出最终结论和内容，不要写"我需要…"、"根据规则…"、"让我…"、"首先…其次…"等过程性文字。
+6. 完成执行后，**必须**在输出末尾附加如下 JSON 块：
 
 ```json
 {{
@@ -104,7 +97,7 @@ def _build_subagent_instruction(
 }}
 ```
 
-{"如果需要为下一步制定约束，遵循以下规则：" if not is_last_step else "这是最后一步，next_step_instruction 填 null。"}""")
+{"【制定下一步约束】在输出 JSON 前，先审视整个计划（context 黑板中的全部步骤）以及下一步任务的具体内容，再为下一步制定局部约束与输出格式，遵循以下规则：" if not is_last_step else "这是最后一步，next_step_instruction 填 null。"}""")
 
     if not is_last_step:
         parts.append("""\

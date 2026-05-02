@@ -45,6 +45,7 @@ _WARMUP_TASKS: Dict[str, asyncio.Task] = {}
 # ── Plan store, context board, and shared utility helpers ────────────────────
 from routing.subagents.plan_store import (
     _role_model,
+    _subagent_model,
     _PLAN_STORE, _PLAN_STORE_LOCK,
     _store_plan, _get_stored_plan, _update_stored_plan,
     _update_stored_step, _replace_stored_steps, _make_plan_dict,
@@ -258,13 +259,19 @@ async def astream_generate_plan(
         if agent_name_map:
             extra["agent_name_map"] = agent_name_map
 
+        plan_title = plan_data.get("user_goal") or plan_data.get("title") or "未命名计划"
+        # Use brief_description as step title if no explicit title field
+        steps_with_title = [
+            {**s, "title": s.get("title") or s.get("brief_description") or f"步骤{i+1}"}
+            for i, s in enumerate(plan_data.get("steps", []))
+        ]
         plan_dict = _make_plan_dict(
             plan_id=plan_id,
             user_id=user_id,
-            title=plan_data.get("title", "未命名计划"),
+            title=plan_title,
             description=plan_data.get("description", ""),
             task_input=task_description,
-            steps=plan_data.get("steps", []),
+            steps=steps_with_title,
             extra_data=extra,
         )
         _store_plan(plan_dict)
@@ -573,7 +580,7 @@ async def astream_execute_plan(
                     retrieved_memory=step_memory,
                     prepared_history=prepared_history,
                     uploaded_files=uploaded_files,
-                    model_name=_role_model("subagent", model_name),
+                    model_name=_subagent_model(getattr(step, "complexity", "complex"), model_name),
                     user_id=user_id,
                     enabled_kb_ids=enabled_kb_ids,
                     _cumulative_usage=_cumulative_usage,
@@ -837,7 +844,8 @@ async def astream_execute_plan(
 
                         completed_steps_so_far = steps[:step_idx]
                         all_new_steps = [
-                            {"title": s.get("title", f"步骤{i+1}"), "brief_description": s.get("brief_description", ""),
+                            {"title": s.get("title") or s.get("brief_description") or f"步骤{i+1}",
+                             "brief_description": s.get("brief_description", ""),
                              "description": s.get("description", ""),
                              "expected_tools": s.get("expected_tools", []),
                              "expected_skills": s.get("expected_skills", []),
