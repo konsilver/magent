@@ -213,44 +213,6 @@ def _context_board_summary(board: Dict[str, Any]) -> str:
     return json.dumps(public, ensure_ascii=False, indent=2)
 
 
-def _build_plan_context_prompt_section(
-    board: Dict[str, Any],
-    step: Any,
-    total_steps: int,
-) -> str:
-    """Build a system-level context section injected into subagent sys_prompt."""
-    lines = [
-        "## 任务上下文（由协调系统注入）",
-        "",
-        "### 全局目标",
-        board.get("plan", {}).get("user_goal") or "（未指定）",
-        "",
-        "### 全局约束",
-    ]
-    for constraint in board.get("check", {}).get("global_constraints", []):
-        lines.append(f"- {constraint}")
-    if not board.get("check", {}).get("global_constraints"):
-        lines.append("（无）")
-
-    lines += [
-        "",
-        "### 用户特征",
-        f"- 即时需求: {board.get('user', {}).get('urgent') or '未知'}",
-        f"- 历史记忆: {board.get('user', {}).get('mem') or '无'}",
-        "",
-        "### 当前步骤信息",
-        f"- 步骤编号: {step.step_order}/{total_steps}",
-        f"- 步骤标题: {step.title}",
-        f"- 步骤描述: {step.description}",
-    ]
-
-    local_constraint = getattr(step, "local_constraint", None)
-    if local_constraint:
-        lines += ["", "### 本步骤局部约束", str(local_constraint)]
-
-    return "\n".join(lines)
-
-
 # ── Tool/agent discovery helpers ──────────────────────────────────────────────
 
 def _collect_valid_tool_names(enabled_mcp_ids: Optional[List[str]] = None) -> Optional[set]:

@@ -734,9 +734,10 @@ async def _run_qa(
 
     last_step_hint = (
         "## 【最后一步特殊说明】\n"
-        "这是计划的最后一步（总结性步骤）。无论 verdict 是什么，都不会触发重做或重规划。\n"
+        "这是计划的最后一步（总结性步骤）。\n"
         "- 若 PASS：正常完成，plan_suggestion 填写对整个计划的优化建议\n"
-        "- 若 REDO/REPLAN：同样填写 plan_suggestion 作为整个计划的失败优化建议，供记忆存储使用"
+        "- 若 REDO：最多触发两次重做，超出次数后直接接受结果\n"
+        "- 若 REPLAN：不会触发重规划，直接接受当前结果；请在 plan_suggestion 填写失败原因和优化建议"
     ) if is_last_step else ""
 
     prompt = _QA_PROMPT_TEMPLATE.format(

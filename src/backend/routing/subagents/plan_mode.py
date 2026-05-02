@@ -49,7 +49,7 @@ from routing.subagents.plan_store import (
     _store_plan, _get_stored_plan, _update_stored_plan,
     _update_stored_step, _replace_stored_steps, _make_plan_dict,
     _StepProxy,
-    _make_context_board, _context_board_summary, _build_plan_context_prompt_section,
+    _make_context_board, _context_board_summary,
     _collect_valid_tool_names, _load_visible_agents,
     _prepare_history, _build_file_context, _parse_json_output,
     _extract_summary, _terminate_mcp_processes, _mem0_enabled,
@@ -79,6 +79,7 @@ from routing.subagents.plan_executor import (
     _build_subagent_instruction,
     _run_subagent_step,
     _extract_next_step_instruction,
+    _strip_thinking_preamble,
 )
 
 
@@ -614,11 +615,26 @@ async def astream_execute_plan(
                     "verdict": qa_verdict,
                 }
 
-                # 最后一步：无论 verdict 如何都不触发重做或重规划，直接退出循环
+                # 最后一步：REDO 最多两次，REPLAN 或超次数后直接接受结果
                 if _is_last_step:
                     _final_plan_suggestion = qa_data.get("plan_suggestion", "")
                     if _final_plan_suggestion:
                         board["plan"]["plan_suggestion"] = _final_plan_suggestion
+                    if qa_verdict == "PASS":
+                        board["plan"]["suggestion"] = None
+                        break
+                    if qa_verdict == "REDO" and redo_count < _MAX_REDO_PER_STEP:
+                        redo_count += 1
+                        logger.warning("[QA] last-step REDO %d/%d", redo_count, _MAX_REDO_PER_STEP)
+                        _new_suggestions = "; ".join(
+                            r.get("suggestion", "") for r in qa_data.get("failure_reason", []) if r.get("suggestion")
+                        )
+                        board["plan"]["suggestion"] = _new_suggestions or "（无建议）"
+                        yield {"type": "plan_step_progress", "step_id": step.step_id,
+                               "delta": f"\nQA 验证未通过，正在重试最后一步 ({redo_count}/{_MAX_REDO_PER_STEP})...\n"}
+                        continue
+                    # REPLAN 或 REDO 超次数：直接接受当前结果，不触发重规划
+                    logger.warning("[QA] last-step verdict=%s — accepting result directly", qa_verdict)
                     board["plan"]["suggestion"] = None
                     break
 
@@ -895,7 +911,7 @@ async def astream_execute_plan(
 
             # ── Finalize step ─────────────────────────────────────────────────
             narrative_text, subagent_json = _extract_next_step_instruction(step_text)
-            display_text = narrative_text if narrative_text else step_text
+            display_text = _strip_thinking_preamble(narrative_text if narrative_text else step_text)
 
             step_result_summary = subagent_json.get("result", "") if subagent_json else ""
             for board_step in board["plan"]["steps"]:

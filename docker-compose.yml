@@ -330,6 +330,7 @@ services:
     volumes:
       - milvus_data:/var/lib/milvus
       - ./src/backend/configs/milvus.yaml:/milvus/configs/user.yaml:ro
+      - ./src/backend/configs/milvus_glog.conf:/milvus/configs/glog.conf:ro
     ports:
       - "19530:19530"
       - "9091:9091"
@@ -407,6 +408,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_HTTP_PORT: 3000
+      GF_LOG_LEVEL: error
     volumes:
       - ./src/backend/configs/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
       - ./src/backend/configs/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources

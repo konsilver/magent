@@ -17,7 +17,6 @@ from core.infra import log_writer
 from core.llm.agent_factory import create_agent_executor
 from routing.streaming import _UsageTrackingModel
 from routing.subagents.plan_store import (
-    _build_plan_context_prompt_section,
     _context_board_summary,
     _parse_json_output,
 )
@@ -36,12 +35,7 @@ def _build_subagent_instruction(
     parts = []
 
     parts.append(f"## context 黑板（共享状态）\n{_context_board_summary(board)}")
-    parts.append(
-        f"## 我的当前任务\n"
-        f"**step_id**: {step.step_id}\n"
-        f"**步骤 {step.step_order}**: {step.title}\n"
-        f"{step.description or ''}"
-    )
+    parts.append(f"## 我的当前任务\n步骤 {step.step_order}")
 
     # 提示 subagent 可参考已完成步骤的输出
     completed_outputs = [
@@ -74,13 +68,7 @@ def _build_subagent_instruction(
 
     if next_step:
         _next_order = getattr(next_step, "step_order", "?")
-        _next_title = getattr(next_step, "title", "")
-        _next_desc = getattr(next_step, "description", "") or ""
-        parts.append(
-            f"## 下一步任务（你需要为它制定约束）\n"
-            f"**步骤 {_next_order}**：{_next_title}\n"
-            f"{_next_desc}"
-        )
+        parts.append(f"## 下一步任务（你需要为它制定约束）\n步骤 {_next_order}")
 
     is_last_step = next_step is None
 
@@ -222,16 +210,6 @@ async def _run_subagent_step(
             )
             logger.info("[SubAgent] step=%d created fresh agent in %.0fms",
                         step.step_order, (_time.monotonic() - _create_t0) * 1000)
-
-        _plan_ctx_section = _build_plan_context_prompt_section(
-            board, step, len(board.get("plan", {}).get("steps", []))
-        )
-        _current_sys_prompt = agent.sys_prompt
-        try:
-            agent.sys_prompt = _current_sys_prompt + "\n\n" + _plan_ctx_section
-        except AttributeError:
-            # sys_prompt is read-only in some AgentScope versions; write backing field directly
-            object.__setattr__(agent, "_sys_prompt", _current_sys_prompt + "\n\n" + _plan_ctx_section)
 
         _orig_hook = agent._instance_pre_reply_hooks.get("dynamic_model")
         if _orig_hook:
@@ -377,7 +355,8 @@ async def _run_subagent_step(
 
             # 只向前端发送 narrative 部分，JSON 块留给后续约束传递，不展示给用户
             _narrative_for_display, _ = _extract_next_step_instruction(step_text)
-            yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": _narrative_for_display or step_text}
+            _display = _strip_thinking_preamble(_narrative_for_display or step_text)
+            yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": _display}
 
         except asyncio.TimeoutError:
             logger.warning("[SubAgent] step=%d(%s) TIMEOUT", step.step_order, step.title)
@@ -423,6 +402,43 @@ async def _run_subagent_step(
         "outcome": _step_outcome,
         "error_msg": _step_error_msg,
     }
+
+
+def _strip_thinking_preamble(text: str, threshold: float = 0.70) -> str:
+    """Strip model meta-commentary from the beginning of a response.
+
+    Strategy: find the LAST line that looks like reasoning/preamble, strip
+    everything up to and including it.  If the stripped portion exceeds
+    `threshold` of the total length, keep the original (safety guard).
+    """
+    if not text:
+        return text
+
+    _REASONING_PATTERNS = re.compile(
+        r"^(好的|当然|让我|我来|我需要|我将|我会|首先|根据|分析|理解|明白"
+        r"|okay|sure|let me|i will|i'll|i need to|first|based on|alright"
+        r"|以下是|下面是|接下来)[，,。.：: ]",
+        re.IGNORECASE,
+    )
+
+    lines = text.splitlines()
+    last_reasoning_idx = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and _REASONING_PATTERNS.match(stripped):
+            last_reasoning_idx = i
+
+    if last_reasoning_idx == -1:
+        return text
+
+    candidate = "\n".join(lines[last_reasoning_idx + 1:]).strip()
+    if not candidate:
+        return text
+
+    if len(candidate) < len(text) * threshold:
+        return text
+
+    return candidate
 
 
 def _extract_next_step_instruction(step_text: str) -> Tuple[str, Dict]:
