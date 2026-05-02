@@ -124,19 +124,21 @@ class RoleModelSettings:
     ``.env`` file to override a specific role without touching the others.
 
     Role env vars:
-        ROLE_USER_PROFILE_MODEL  — UserProfile agent
-        ROLE_PLAN_MODEL          — Planner agent
-        ROLE_WARMUP_MODEL        — Warmup agent
-        ROLE_SUBAGENT_MODEL      — SubAgent (step executor)
-        ROLE_QA_MODEL            — QA agent (per-step + final)
-        ROLE_INTENT_MODEL        — Intent classifier (confirm/replan)
-        ROLE_SUMMARY_MODEL       — Summary agent (final plan result)
+        ROLE_USER_PROFILE_MODEL         — UserProfile agent
+        ROLE_PLAN_MODEL                 — Planner agent
+        ROLE_WARMUP_MODEL               — Warmup agent
+        ROLE_SUBAGENT_MODEL             — SubAgent (step executor, complex steps)
+        ROLE_SUBAGENT_SIMPLE_MODEL      — SubAgent (simple steps, fast model)
+        ROLE_QA_MODEL                   — QA agent (per-step + final)
+        ROLE_INTENT_MODEL               — Intent classifier (confirm/replan)
+        ROLE_SUMMARY_MODEL              — Summary agent (final plan result)
     """
 
     user_profile: str = field(default_factory=lambda: _env("ROLE_USER_PROFILE_MODEL", _env("BASE_MODEL_NAME", "")))
     plan: str = field(default_factory=lambda: _env("ROLE_PLAN_MODEL", _env("BASE_MODEL_NAME", "")))
     warmup: str = field(default_factory=lambda: _env("ROLE_WARMUP_MODEL", _env("BASE_MODEL_NAME", "")))
     subagent: str = field(default_factory=lambda: _env("ROLE_SUBAGENT_MODEL", _env("BASE_MODEL_NAME", "")))
+    subagent_simple: str = field(default_factory=lambda: _env("ROLE_SUBAGENT_SIMPLE_MODEL", _env("ROLE_SUBAGENT_MODEL", _env("BASE_MODEL_NAME", ""))))
     qa: str = field(default_factory=lambda: _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", "")))
     intent: str = field(default_factory=lambda: _env("ROLE_INTENT_MODEL", _env("BASE_MODEL_NAME", "")))
     summary: str = field(default_factory=lambda: _env("ROLE_SUMMARY_MODEL", _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", ""))))

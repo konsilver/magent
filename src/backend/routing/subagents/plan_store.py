@@ -30,13 +30,19 @@ def _role_model(role: str, fallback: str) -> str:
 
 
 def _subagent_model(complexity: str, fallback: str) -> str:
-    """Return model name for a subagent step based on its complexity.
+    """Return model identifier for a subagent step based on its complexity.
 
-    simple → subagent_simple role (fast model for lightweight steps)
-    complex / anything else → subagent role (full model)
+    Returns either a concrete model name or a role key string — both are
+    accepted by create_agent_executor (it tries role-key lookup first, then
+    provider lookup by model_name).
+
+    simple  → env ROLE_SUBAGENT_SIMPLE_MODEL if set, else "subagent_simple"
+              (agent_factory resolves the role key from DB)
+    complex → env ROLE_SUBAGENT_MODEL if set, else fallback
     """
     if complexity == "simple":
-        return _role_model("subagent_simple", fallback)
+        from_env = _role_model("subagent_simple", "")
+        return from_env if from_env else "subagent_simple"
     return _role_model("subagent", fallback)
 
 
