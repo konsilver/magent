@@ -129,7 +129,8 @@ class RoleModelSettings:
         ROLE_WARMUP_MODEL               — Warmup agent
         ROLE_SUBAGENT_MODEL             — SubAgent (step executor, complex steps)
         ROLE_SUBAGENT_SIMPLE_MODEL      — SubAgent (simple steps, fast model)
-        ROLE_QA_MODEL                   — QA agent (per-step + final)
+        ROLE_QA_MODEL                   — QA agent (complex steps)
+        ROLE_QA_SIMPLE_MODEL            — QA agent (simple steps, fast model)
         ROLE_INTENT_MODEL               — Intent classifier (confirm/replan)
         ROLE_SUMMARY_MODEL              — Summary agent (final plan result)
     """
@@ -140,6 +141,7 @@ class RoleModelSettings:
     subagent: str = field(default_factory=lambda: _env("ROLE_SUBAGENT_MODEL", _env("BASE_MODEL_NAME", "")))
     subagent_simple: str = field(default_factory=lambda: _env("ROLE_SUBAGENT_SIMPLE_MODEL", _env("ROLE_SUBAGENT_MODEL", _env("BASE_MODEL_NAME", ""))))
     qa: str = field(default_factory=lambda: _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", "")))
+    qa_simple: str = field(default_factory=lambda: _env("ROLE_QA_SIMPLE_MODEL", _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", ""))))
     intent: str = field(default_factory=lambda: _env("ROLE_INTENT_MODEL", _env("BASE_MODEL_NAME", "")))
     summary: str = field(default_factory=lambda: _env("ROLE_SUMMARY_MODEL", _env("ROLE_QA_MODEL", _env("BASE_MODEL_NAME", ""))))
 

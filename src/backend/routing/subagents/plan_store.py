@@ -46,6 +46,18 @@ def _subagent_model(complexity: str, fallback: str) -> str:
     return _role_model("subagent", fallback)
 
 
+def _qa_model(complexity: str, fallback: str) -> str:
+    """Return model identifier for QA based on the step's complexity.
+
+    simple  → ROLE_QA_SIMPLE_MODEL if set, else ROLE_QA_MODEL, else fallback
+    complex → ROLE_QA_MODEL if set, else fallback
+    """
+    if complexity == "simple":
+        from_env = _role_model("qa_simple", "")
+        return from_env if from_env else _role_model("qa", fallback)
+    return _role_model("qa", fallback)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # In-memory Plan Store
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -99,6 +111,7 @@ def _replace_stored_steps(plan_id: str, new_steps: List[Dict[str, Any]]) -> Opti
                 "title": s.get("title", f"步骤{i+1}"),
                 "brief_description": s.get("brief_description", ""),
                 "description": s.get("description", ""),
+                "complexity": s.get("complexity", "complex"),
                 "expected_tools": s.get("expected_tools", []),
                 "expected_skills": s.get("expected_skills", []),
                 "expected_agents": s.get("expected_agents", []),
@@ -135,6 +148,7 @@ def _make_plan_dict(
             "title": s.get("title", f"步骤{i+1}"),
             "brief_description": s.get("brief_description", ""),
             "description": s.get("description", ""),
+            "complexity": s.get("complexity", "complex"),
             "expected_tools": s.get("expected_tools", []),
             "expected_skills": s.get("expected_skills", []),
             "expected_agents": s.get("expected_agents", []),

@@ -348,7 +348,8 @@ async def _run_subagent_step(
 
             # 只向前端发送 narrative 部分，JSON 块留给后续约束传递，不展示给用户
             _narrative_for_display, _ = _extract_next_step_instruction(step_text)
-            _display = _strip_thinking_preamble(_narrative_for_display or step_text)
+            # threshold=0: no safety guard — always strip reasoning preamble for display
+            _display = _strip_thinking_preamble(_narrative_for_display or step_text, threshold=0)
             yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": _display}
 
         except asyncio.TimeoutError:

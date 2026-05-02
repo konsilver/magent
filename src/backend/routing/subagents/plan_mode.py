@@ -46,6 +46,7 @@ _WARMUP_TASKS: Dict[str, asyncio.Task] = {}
 from routing.subagents.plan_store import (
     _role_model,
     _subagent_model,
+    _qa_model,
     _PLAN_STORE, _PLAN_STORE_LOCK,
     _store_plan, _get_stored_plan, _update_stored_plan,
     _update_stored_step, _replace_stored_steps, _make_plan_dict,
@@ -610,7 +611,7 @@ async def astream_execute_plan(
                     board=board,
                     local_constraint=current_local_constraint,
                     expected_schema=current_expected_schema,
-                    model_name=_role_model("qa", model_name),
+                    model_name=_qa_model(getattr(step, "complexity", "complex"), model_name),
                     user_id=user_id,
                     is_last_step=_is_last_step,
                 )
@@ -847,6 +848,7 @@ async def astream_execute_plan(
                             {"title": s.get("title") or s.get("brief_description") or f"步骤{i+1}",
                              "brief_description": s.get("brief_description", ""),
                              "description": s.get("description", ""),
+                             "complexity": s.get("complexity", "complex"),
                              "expected_tools": s.get("expected_tools", []),
                              "expected_skills": s.get("expected_skills", []),
                              "expected_agents": s.get("expected_agents", [])}
@@ -855,6 +857,7 @@ async def astream_execute_plan(
                         merged_steps = [
                             {"title": s.title, "brief_description": s._d.get("brief_description", ""),
                              "description": s._d.get("description", ""),
+                             "complexity": s._d.get("complexity", "complex"),
                              "expected_tools": s._d.get("expected_tools") or [],
                              "expected_skills": s._d.get("expected_skills") or [],
                              "expected_agents": s._d.get("expected_agents") or []}
