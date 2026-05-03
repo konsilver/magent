@@ -23,6 +23,22 @@ from routing.subagents.plan_store import (
 from routing.subagents.plan_agents import _run_qa
 
 
+def _load_code_exec_prompt() -> str:
+    """Load and concatenate all code_exec system prompt files."""
+    _code_exec_dir = os.path.join(
+        os.path.dirname(__file__), '..', '..', 'prompts', 'prompt_text', 'code_exec', 'system',
+    )
+    if not os.path.isdir(_code_exec_dir):
+        return ""
+    sections = []
+    for fname in sorted(f for f in os.listdir(_code_exec_dir) if f.endswith('.system.md')):
+        with open(os.path.join(_code_exec_dir, fname), 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if content:
+                sections.append(content)
+    return "\n\n".join(sections)
+
+
 def _build_subagent_instruction(
     step: Any,
     next_step: Optional[Any],
@@ -84,17 +100,16 @@ def _build_subagent_instruction(
 }}"""
 
     _code_exec_hint = (
-        "\n7. 若你在本步骤中执行了代码（你判断你的任务是生成代码类任务），**必须**在输出末尾 JSON 块的 \"result\" 字段中"
-        "包含代码本身与代码执行结果，若代码长度超过100行则改为包含简化的伪代码，若代码执行结果超过60字则改为简化的结果，若代码执行失败则字段填充报错原因"
+        "\n7. 若你在本步骤中执行了代码（当你的步骤的if_code_exc为true时），**必须**在输出末尾 JSON 块的 \"result\" 字段中"
+        "包含代码本身与代码执行结果，若代码长度超过100行则改为包含简化的伪代码，若代码执行结果超过60字则改为简化的结果，若代码执行失败则字段填充报错信息"
     ) if code_exec_enabled else ""
 
     parts.append(f"""## 执行要求
 1. 聚焦当前步骤目标，不执行其他步骤的任务
+2. 如果你的if_code_exc为false，禁止调用代码执行工具
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
-3. 【重要】context.user 字段（用户实时特征）优先级高于历史记忆中任何 suggestion
-4. 【重要】你**必须**要严格区分你的任务是否是“生成代码”类生成代码任务还是“总结、整理、分析代码”类非生成代码任务，**只有前者情况下**你才需要执行并验证代码，后者情况下你**不需要调用代码执行工具**
-4. context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，结合这些输出完成你的任务
-5. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}
+3. context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，结合这些输出完成你的任务
+4. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}
 
 ```json
 {{
@@ -119,9 +134,13 @@ def _build_subagent_instruction(
 - 不允许生成模糊约束（如：合理、尽量、适当）
 - 每条 constraint 设定有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
 - 禁止为低风险任务添加结构性约束
-- 【必须遵循】如果这个步骤是需要写代码的任务，则构造对代码模块的预期执行效果的软约束
-- 【必须遵循】如果这个步骤只是“总结/整理”代码，则**禁止**制定“代码执行效果”类约束
+- 【重要】如果这个步骤的plan_steps-if_code_exc字段为true，则为其制定验证代码执行效果的软约束
 """)
+
+    if code_exec_enabled:
+        _code_exec_prompt = _load_code_exec_prompt()
+        if _code_exec_prompt:
+            parts.append(_code_exec_prompt)
 
     return "\n\n".join(parts)
 

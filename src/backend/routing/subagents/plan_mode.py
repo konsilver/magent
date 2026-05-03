@@ -572,8 +572,9 @@ async def astream_execute_plan(
                     "label": "SubAgent 执行任务" if redo_count == 0 else f"SubAgent 重做任务（第 {redo_count} 次）",
                 }
                 _step_complexity = getattr(step, "complexity", "complex")
-                logger.info("[complexity] step=%s(%r) complexity=%s subagent_model=%s qa_model=%s",
-                            step.step_id, getattr(step, "title", ""), _step_complexity,
+                _step_if_code_exc = bool(getattr(step, "if_code_exc", False))
+                logger.info("[complexity] step=%s(%r) complexity=%s if_code_exc=%s subagent_model=%s qa_model=%s",
+                            step.step_id, getattr(step, "title", ""), _step_complexity, _step_if_code_exc,
                             _subagent_model(_step_complexity, model_name),
                             _qa_model(_step_complexity, model_name))
                 async for event in _run_subagent_step(
@@ -591,7 +592,7 @@ async def astream_execute_plan(
                     _cumulative_usage=_cumulative_usage,
                     _plan_subagent_log_id=_plan_subagent_log_id,
                     _all_mcp_clients=_all_mcp_clients,
-                    code_exec_enabled=(_step_complexity == "complex"),
+                    code_exec_enabled=_step_if_code_exc,
                     step_complexity=_step_complexity,
                 ):
                     if event["type"] == "_step_result":

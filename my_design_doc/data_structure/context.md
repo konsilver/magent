@@ -20,6 +20,7 @@
             "description": "...",
             //对应subagent的输出结果写在这里,注意要经过QA check成功后再写
             "output": "...",
+            "if_code_exc": bool
         }
     ]
     "suggestion": 这个字段很特殊但很实用，QA不管判断redo还是replan，生成的最新建议都同步到这里，且新的覆盖旧的

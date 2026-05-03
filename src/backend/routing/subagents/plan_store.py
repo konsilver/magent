@@ -112,6 +112,7 @@ def _replace_stored_steps(plan_id: str, new_steps: List[Dict[str, Any]]) -> Opti
                 "brief_description": s.get("brief_description", ""),
                 "description": s.get("description", ""),
                 "complexity": s.get("complexity", "complex"),
+                "if_code_exc": bool(s.get("if_code_exc", False)),
                 "expected_tools": s.get("expected_tools", []),
                 "expected_skills": s.get("expected_skills", []),
                 "expected_agents": s.get("expected_agents", []),
@@ -149,6 +150,7 @@ def _make_plan_dict(
             "brief_description": s.get("brief_description", ""),
             "description": s.get("description", ""),
             "complexity": s.get("complexity", "complex"),
+            "if_code_exc": bool(s.get("if_code_exc", False)),
             "expected_tools": s.get("expected_tools", []),
             "expected_skills": s.get("expected_skills", []),
             "expected_agents": s.get("expected_agents", []),
@@ -228,7 +230,7 @@ def _context_board_summary(board: Dict[str, Any]) -> str:
     Only exposes fields defined in data_structure/context.md — internal
     runtime fields (suggestion, tool_use_trace, _*) are intentionally excluded.
     """
-    _PUBLIC_STEP_KEYS = {"step_id", "title", "brief_description", "description", "output"}
+    _PUBLIC_STEP_KEYS = {"step_id", "title", "brief_description", "description", "output", "if_code_exc"}
     steps = [
         {k: v for k, v in s.items() if k in _PUBLIC_STEP_KEYS}
         for s in board.get("plan", {}).get("steps", [])
