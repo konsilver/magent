@@ -84,7 +84,7 @@ def _build_subagent_instruction(
 }}"""
 
     _code_exec_hint = (
-        "\n7. 【代码执行汇报】若你在本步骤中执行了代码，**必须**在输出末尾 JSON 块的 \"result\" 字段中"
+        "\n7. 若你在本步骤中执行了代码，**必须**在输出末尾 JSON 块的 \"result\" 字段中"
         "包含code字段与code_result，若代码长度超过30行则改为包含简化的伪代码，若代码执行结果超过100字则改为简化的结果，若代码执行失败则结果填写执行失败"
     ) if code_exec_enabled else ""
 
@@ -92,7 +92,7 @@ def _build_subagent_instruction(
 1. 聚焦当前步骤目标，不执行其他步骤的任务
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
 3. 【重要】context.user 字段（用户实时特征）优先级高于历史记忆中任何 suggestion
-4. 【参考前序输出】context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，可结合这些输出更好地完成当前任务
+4. 【重要】context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，结合这些输出理解你的任务
 5. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}
 
 ```json
@@ -119,6 +119,7 @@ def _build_subagent_instruction(
 - 每条 constraint 设定有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
 - 禁止为低风险任务添加结构性约束
 - 如果这个步骤是需要书写代码的任务，则构造对代码模块的预期测试效果的软约束（如任务是写一个双线程打印1~20，则你可以约束“代码执行结果是两个线程轮替打印1~20”）
+- 【重要】如果你的任务是“总结/整理代码”等非生成代码任务，如果则不要制定代码验证效果等约束，因为代码已经被验证过了
 """)
 
     return "\n\n".join(parts)

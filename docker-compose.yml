@@ -56,7 +56,7 @@ services:
 
       # Environment
       ENV: ${ENV:-dev}
-      PORT: ${BACKEND_PORT:-3001}
+      PORT: ${BACKEND_PORT:-3002}
 
       # Authentication
       AUTH_MODE: ${AUTH_MODE:-mock}
