@@ -46,6 +46,11 @@ from routing.registry import AgentSpec
 
 load_dotenv()
 
+_MCP_SERVER_BLOCKLIST: Set[str] = {
+    "ai_chain_information_mcp",
+}
+
+
 def _effective_mcp_server_keys(
     cfg,
     agent_spec: Optional[AgentSpec],
@@ -53,8 +58,7 @@ def _effective_mcp_server_keys(
     enabled_kb_ids: Optional[list[str]] = None,
 ) -> list[str]:
     all_servers = McpServerConfigService.get_instance().get_all_servers(enabled_only=True)
-    all_keys = list(all_servers.keys())
-    allow: Set[str] = set(all_keys)
+    all_keys = [k for k in all_servers.keys() if k not in _MCP_SERVER_BLOCKLIST]
 
     # NOTE: Prompt config mcp_servers.enabled whitelist is intentionally
     # skipped here. All MCP servers are now DB-managed via admin panel,

@@ -715,6 +715,16 @@ async def _run_warmup(
 # QA Agent
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _qa_context_board_summary(board: Dict[str, Any]) -> str:
+    """QA-specific board summary: only user + global_constraints + user_goal."""
+    public = {
+        "user": board.get("user", {}),
+        "user_goal": board.get("plan", {}).get("user_goal"),
+        "global_constraints": board.get("check", {}).get("global_constraints", []),
+    }
+    return json.dumps(public, ensure_ascii=False, indent=2)
+
+
 _QA_PROMPT_TEMPLATE = """你是 QA Agent，负责验证 SubAgent 的执行结果。你可以调用 execute_code 工具运行 Python 代码来辅助验证（例如：校验数值计算、检查格式、验证逻辑一致性）。
 
 ## context 黑板
@@ -733,7 +743,7 @@ _QA_PROMPT_TEMPLATE = """你是 QA Agent，负责验证 SubAgent 的执行结果
 - constraint_type: field_presence | value_range | format | dependency
 - target: 字段名
 - rule: 字段规则
-- priority: hard | soft（每条约束独立设置）
+- priority: hard | soft
 
 local_constraint:
 {local_constraint}
@@ -751,10 +761,10 @@ Step 2: 检查 global_constraints 中 priority="hard" 的条目 + local_constrai
 - 注意：每条 constraint 有自己独立的 priority 字段
 - 任意一条 priority="hard" 的约束不满足 → REDO
 
-Step 3: 检查 local_constraint 中 priority="soft" 的条目，使用 LLM judge
+Step 3: 检查 local_constraint 中 priority="soft" 的条目
 - confidence < 0.6 视为失败 → REDO
 
-Step 4: 对 context 中 user 和 plan 字段整体进行 LLM judge，判断是否偏离整体任务目标
+Step 4: 对 context 中 user_goal 和 user 字段，结合当前步骤描述与执行结果，判断是否偏离整体任务目标
 - confidence < 0.8 → REPLAN
 
 注意：
@@ -809,7 +819,7 @@ async def _run_qa(
     ) if is_last_step else ""
 
     prompt = _QA_PROMPT_TEMPLATE.format(
-        context_board=_context_board_summary(board),
+        context_board=_qa_context_board_summary(board),
         step_id=step.step_id,
         step_title=step.title,
         step_description=step.description or "",

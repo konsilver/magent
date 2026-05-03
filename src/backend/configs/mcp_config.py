@@ -87,17 +87,6 @@ MCP_SERVERS: Dict[str, dict] = {
         ),
     },
 
-    # Bundled MCP server (MCP-level pluggability): enable/disable this single entry
-    # to add/remove the whole AI/chain/news tool bundle.
-    "ai_chain_information_mcp": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["-m", "mcp_servers.ai_chain_information_mcp.server"],
-        # INDUSTRY_URL, INDUSTRY_AUTH_TOKEN are now injected dynamically
-        # by factory.py via SystemConfigService.get_service_env_overlay()
-        "env": _stdio_env(),
-    },
-
     "web_fetch": {
         "transport": "stdio",
         "command": "python",
