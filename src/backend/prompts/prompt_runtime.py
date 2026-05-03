@@ -293,10 +293,9 @@ def build_subagent_system_prompt(
     1. 时间/环境信息 (从 00_time_role 提取通用部分)
     2. 用户自定义 system_prompt (核心角色设定)
     3. 工具使用规范 (20_tools_policy)
-    4. 引用规范 (65_citations)
-    5. 输出格式 (60_format)
-    6. 工具路由表 (动态生成)
-    7. 轻量 KB 目录 (如有)
+    4. 输出格式 (60_format)
+    5. 工具路由表 (动态生成)
+    6. 轻量 KB 目录 (如有)
     """
     now = datetime.now().isoformat()
 
@@ -320,12 +319,7 @@ def build_subagent_system_prompt(
     if tools_policy.strip():
         segments.append(tools_policy.strip())
 
-    # 4. Citations
-    citations = fs.get_prompt("65_citations", "system", vars={"now": now})
-    if citations.strip():
-        segments.append(citations.strip())
-
-    # 5. Output format
+    # 4. Output format
     fmt = fs.get_prompt("60_format", "system", vars={"now": now})
     if fmt.strip():
         segments.append(fmt.strip())

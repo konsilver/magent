@@ -235,11 +235,11 @@ async def _create_bare_llm_agent(
             timeout=cfg.timeout,
             base_url=cfg.base_url,
             api_key=cfg.api_key,
-            stream=False,
+            stream=True,
         )
         effective_model_name = cfg.model_name
     else:
-        model = get_default_model(stream=False)
+        model = get_default_model(stream=True)
         effective_model_name = model_name or ""
 
     ctx_window = resolve_model_context_window(effective_model_name)

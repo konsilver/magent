@@ -30,6 +30,7 @@ def _build_subagent_instruction(
     local_constraint: Dict,
     expected_schema: Dict,
     retrieved_memory: Dict,
+    code_exec_enabled: bool = False,
 ) -> str:
     """Build full instruction string for SubAgent."""
     parts = []
@@ -82,13 +83,19 @@ def _build_subagent_instruction(
   }}
 }}"""
 
+    _code_exec_hint = (
+        "\n7. 【代码执行汇报】若你在本步骤中执行了代码，**必须**在输出末尾 JSON 块的 \"result\" 字段中"
+        "包含代码执行摘要：说明关键结论（不超过200字），若运行失败（exit_code != 0）须说明错误原因。"
+        "不需要粘贴完整代码或完整输出，只汇报关键结论和最终 exit_code。"
+    ) if code_exec_enabled else ""
+
     parts.append(f"""## 执行要求
 1. 聚焦当前步骤目标，不执行其他步骤的任务
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
 3. 【重要】context.user 字段（用户实时特征）优先级高于历史记忆中任何 suggestion
 4. 【参考前序输出】context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，可结合这些输出更好地完成当前任务
 5. 【输出纪律】**禁止在回复中输出任何思考过程、推理步骤或自我分析**。直接输出最终结论和内容，不要写"我需要…"、"根据规则…"、"让我…"、"首先…其次…"等过程性文字。
-6. 完成执行后，**必须**在输出末尾附加如下 JSON 块：
+6. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}
 
 ```json
 {{
@@ -139,11 +146,12 @@ async def _run_subagent_step(
     _cumulative_usage: "_UsageTrackingModel",
     _plan_subagent_log_id: str,
     _all_mcp_clients: List,
+    code_exec_enabled: bool = False,
 ) -> AsyncIterator[Dict[str, Any]]:
     """Execute a single SubAgent step, yield SSE events."""
     instruction = _build_subagent_instruction(
         step, next_step, board, local_constraint, expected_schema,
-        retrieved_memory,
+        retrieved_memory, code_exec_enabled=code_exec_enabled,
     )
 
     logger.info("[SubAgent] START step=%d(%s) id=%s model=%s prompt_chars=%d",
@@ -180,6 +188,10 @@ async def _run_subagent_step(
         from core.llm.agent_pool import AgentPool as _AgentPool
         _pool = _AgentPool.get_instance()
         _use_pool = _pool.is_ready
+        if code_exec_enabled:
+            # Pool agents have a fixed toolkit; execute_code cannot be injected at runtime.
+            # Force fresh agent creation so code_exec_enabled is properly wired up.
+            _use_pool = False
         if _use_pool:
             try:
                 _acquire_t0 = _time.monotonic()
@@ -210,6 +222,7 @@ async def _run_subagent_step(
                 model_name=model_name,
                 isolated=False,
                 max_iters=_step_max_iters,
+                code_exec_enabled=code_exec_enabled,
             )
             logger.info("[SubAgent] step=%d created fresh agent in %.0fms",
                         step.step_order, (_time.monotonic() - _create_t0) * 1000)

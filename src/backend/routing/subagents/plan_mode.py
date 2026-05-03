@@ -572,6 +572,7 @@ async def astream_execute_plan(
                     "activity": "subagent_executing",
                     "label": "SubAgent 执行任务" if redo_count == 0 else f"SubAgent 重做任务（第 {redo_count} 次）",
                 }
+                _step_complexity = getattr(step, "complexity", "complex")
                 async for event in _run_subagent_step(
                     step=step,
                     next_step=next_step,
@@ -581,12 +582,13 @@ async def astream_execute_plan(
                     retrieved_memory=step_memory,
                     prepared_history=prepared_history,
                     uploaded_files=uploaded_files,
-                    model_name=_subagent_model(getattr(step, "complexity", "complex"), model_name),
+                    model_name=_subagent_model(_step_complexity, model_name),
                     user_id=user_id,
                     enabled_kb_ids=enabled_kb_ids,
                     _cumulative_usage=_cumulative_usage,
                     _plan_subagent_log_id=_plan_subagent_log_id,
                     _all_mcp_clients=_all_mcp_clients,
+                    code_exec_enabled=(_step_complexity == "complex"),
                 ):
                     if event["type"] == "_step_result":
                         step_text = event["step_text"]
@@ -611,7 +613,7 @@ async def astream_execute_plan(
                     board=board,
                     local_constraint=current_local_constraint,
                     expected_schema=current_expected_schema,
-                    model_name=_qa_model(getattr(step, "complexity", "complex"), model_name),
+                    model_name=_qa_model(_step_complexity, model_name),
                     user_id=user_id,
                     is_last_step=_is_last_step,
                 )
