@@ -186,7 +186,7 @@ def _save_task_memory_background(
     async def _save() -> None:
         try:
             from core.llm.memory import save_conversation, MEM0_GRAPH_ENABLED
-            from routing.subagents.plan_agents import _call_llm_agent
+            from routing.subagents.plan_agents import _call_llm_agent_cached
             from core.config import settings
             status_str = "success" if success else "replan"
             steps_desc = "\n".join(
@@ -201,7 +201,7 @@ def _save_task_memory_background(
                 quality_score=f"{quality_score:.2f}",
             )
             _model = model_name or settings.llm.roles.plan or settings.llm.base_model_name
-            distill_text = await _call_llm_agent(distill_prompt, _model, user_id, timeout=30)
+            distill_text = await _call_llm_agent_cached(distill_prompt, _model, user_id, timeout=30)
             distill_data = _parse_json_output(distill_text) or {}
 
             skeleton_desc = distill_data.get("skeleton_description", user_goal[:100])
@@ -274,7 +274,7 @@ def _save_step_memory_background(
     async def _save() -> None:
         try:
             from core.llm.memory import save_conversation
-            from routing.subagents.plan_agents import _call_llm_agent
+            from routing.subagents.plan_agents import _call_llm_agent_cached
             from core.config import settings
             constraint_desc = local_constraint.get("constraint", "") if local_constraint else ""
             tools_desc = ", ".join(t for t in tool_use_trace if t) or "无"
@@ -288,7 +288,7 @@ def _save_step_memory_background(
                 risk=redo_desc,
             )
             _model = model_name or settings.llm.base_model_name
-            judge_text = await _call_llm_agent(judge_prompt, _model, user_id, timeout=20)
+            judge_text = await _call_llm_agent_cached(judge_prompt, _model, user_id, timeout=20)
             judge_data = _parse_json_output(judge_text)
             if not judge_data or not judge_data.get("reusable"):
                 logger.debug("[Memory] step memory skipped by LLM judge: %s", step_description[:40])
@@ -322,7 +322,7 @@ def _save_user_profile_background(user_id: str, profile_update: Dict, model_name
     async def _save() -> None:
         try:
             from core.llm.memory import save_facts_direct, retrieve_memories_with_ids, delete_memory
-            from routing.subagents.plan_agents import _call_llm_agent
+            from routing.subagents.plan_agents import _call_llm_agent_cached
             from core.config import settings
 
             # Step 1: 用 urgent 作为 query 检索语义相似的 user_profile 条目（含 id）
@@ -338,7 +338,7 @@ def _save_user_profile_background(user_id: str, profile_update: Dict, model_name
                 urgent=urgent,
             )
             _model = model_name or settings.llm.roles.user_profile or settings.llm.base_model_name
-            merged_text = await _call_llm_agent(merge_prompt, _model, user_id, timeout=20)
+            merged_text = await _call_llm_agent_cached(merge_prompt, _model, user_id, timeout=20)
             merged_data = _parse_json_output(merged_text)
             facts: List[str] = merged_data.get("facts", []) if merged_data else []
             if not facts:

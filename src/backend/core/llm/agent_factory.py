@@ -186,38 +186,14 @@ async def _create_bare_llm_agent(
     _log = logging.getLogger(__name__)
     _t0 = time.monotonic()
 
-    from core.config.model_config import ModelConfigService, ResolvedModelConfig
+    from core.config.model_config import ModelConfigService
+    from core.llm.chat_models import resolve_provider_by_model_name
     from core.llm.context_manager import resolve_model_context_window
 
     svc = ModelConfigService.get_instance()
     cfg = None
     if model_name:
-        # Try as role key first (e.g. "plan_agent"), then as model name via DB lookup
-        cfg = svc.resolve(model_name)
-        if cfg is None:
-            # model_name is a concrete model name (e.g. "qwen3_80b") — find matching provider
-            try:
-                from core.db.engine import SessionLocal
-                from core.db.models import ModelProvider
-                with SessionLocal() as _db:
-                    provider = _db.query(ModelProvider).filter(
-                        ModelProvider.model_name == model_name,
-                        ModelProvider.is_active == True,
-                        ModelProvider.provider_type == "chat",
-                    ).first()
-                    if provider:
-                        extra = dict(provider.extra_config or {})
-                        cfg = ResolvedModelConfig(
-                            base_url=provider.base_url,
-                            api_key=provider.api_key,
-                            model_name=provider.model_name,
-                            temperature=float(extra.get("temperature", 0.6)),
-                            max_tokens=int(extra.get("max_tokens", 8192)),
-                            timeout=int(extra.get("timeout", 120)),
-                            extra={},
-                        )
-            except Exception as _exc:
-                _log.debug("[factory-bare] provider lookup by model_name failed: %s", _exc)
+        cfg = resolve_provider_by_model_name(model_name)
     if cfg is None:
         cfg = svc.resolve("main_agent")
 
@@ -350,7 +326,12 @@ async def create_agent_executor(
     # DB-driven env overlays are already applied inside McpServerConfigService,
     # so no manual overlay step is needed here.
 
-    loader = await asyncio.to_thread(_preload_skill_metadata)
+    # Fast path: if skill metadata cache is already warm, skip thread dispatch overhead (~7ms)
+    _skill_loader_instance = get_skill_loader()
+    if _skill_loader_instance._metadata_cache is not None:
+        loader = _skill_loader_instance
+    else:
+        loader = await asyncio.to_thread(_preload_skill_metadata)
     _log.info("[factory] +%s skill metadata pre-loaded", _elapsed())
 
     # ── Phase 2: MCP toolkit (async, may spawn per-request subprocesses) ──
@@ -582,31 +563,10 @@ async def create_agent_executor(
             _log.warning("[factory] %s model resolve failed: %s, falling back to main_agent", _mode_role, exc)
     if default_model is None and model_name:
         # Caller specified a concrete model name (e.g. from ROLE_SUBAGENT_MODEL env var)
-        # Try role key first, then direct DB provider lookup by model_name
+        # Use cached lookup to avoid a DB query on every subagent creation.
         try:
-            from core.config.model_config import ModelConfigService, ResolvedModelConfig
-            from core.db.engine import SessionLocal as _SL
-            from core.db.models import ModelProvider as _MP
-            _svc2 = ModelConfigService.get_instance()
-            _named_cfg = _svc2.resolve(model_name)
-            if _named_cfg is None:
-                with _SL() as _db2:
-                    _prov = _db2.query(_MP).filter(
-                        _MP.model_name == model_name,
-                        _MP.is_active == True,
-                        _MP.provider_type == "chat",
-                    ).first()
-                    if _prov:
-                        _extra = dict(_prov.extra_config or {})
-                        _named_cfg = ResolvedModelConfig(
-                            base_url=_prov.base_url,
-                            api_key=_prov.api_key,
-                            model_name=_prov.model_name,
-                            temperature=float(_extra.get("temperature", 0.6)),
-                            max_tokens=int(_extra.get("max_tokens", 8192)),
-                            timeout=int(_extra.get("timeout", 120)),
-                            extra={},
-                        )
+            from core.llm.chat_models import resolve_provider_by_model_name
+            _named_cfg = resolve_provider_by_model_name(model_name)
             if _named_cfg:
                 default_model = make_chat_model(
                     model=_named_cfg.model_name,

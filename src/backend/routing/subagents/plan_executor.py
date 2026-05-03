@@ -38,19 +38,19 @@ def _build_subagent_instruction(
     parts.append(f"## context 黑板（共享状态）\n{_context_board_summary(board)}")
 
     step_desc = step.description or getattr(step, "title", "")
-    parts.append(f"## 我的当前任务\n步骤 {step.step_order}：{step_desc}")
+    parts.append(f"## 你的当前任务\n步骤 {step.step_order}：{step_desc}")
 
     if local_constraint:
-        parts.append(f"## 上个 Agent 为我制定的局部约束\n{json.dumps(local_constraint, ensure_ascii=False, indent=2)}")
+        parts.append(f"## 上个 Agent 为你制定的局部约束\n{json.dumps(local_constraint, ensure_ascii=False, indent=2)}")
 
     if expected_schema:
-        parts.append(f"## 上个 Agent 为我定义的输出格式\n{json.dumps(expected_schema, ensure_ascii=False, indent=2)}")
+        parts.append(f"## 上个 Agent 为你定义的输出格式\n{json.dumps(expected_schema, ensure_ascii=False, indent=2)}")
 
     # REDO 情况：从 board["plan"]["suggestion"] 读取 QA 建议
     redo_suggestion = board.get("plan", {}).get("suggestion")
     if redo_suggestion:
         parts.append(
-            f"## 【重做任务】QA 优化建议\n"
+            f"##QA 优化建议\n"
             f"你的上一次执行未通过 QA 检查，请参考以下建议重新完成任务：\n{redo_suggestion}"
         )
 
@@ -85,8 +85,7 @@ def _build_subagent_instruction(
 
     _code_exec_hint = (
         "\n7. 【代码执行汇报】若你在本步骤中执行了代码，**必须**在输出末尾 JSON 块的 \"result\" 字段中"
-        "包含代码执行摘要：说明关键结论（不超过200字），若运行失败（exit_code != 0）须说明错误原因。"
-        "不需要粘贴完整代码或完整输出，只汇报关键结论和最终 exit_code。"
+        "包含code字段与code_result，若代码长度超过30行则改为包含简化的伪代码，若代码执行结果超过100字则改为简化的结果，若代码执行失败则结果填写执行失败"
     ) if code_exec_enabled else ""
 
     parts.append(f"""## 执行要求
@@ -94,12 +93,11 @@ def _build_subagent_instruction(
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
 3. 【重要】context.user 字段（用户实时特征）优先级高于历史记忆中任何 suggestion
 4. 【参考前序输出】context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，可结合这些输出更好地完成当前任务
-5. 【输出纪律】**禁止在回复中输出任何思考过程、推理步骤或自我分析**。直接输出最终结论和内容，不要写"我需要…"、"根据规则…"、"让我…"、"首先…其次…"等过程性文字。
-6. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}
+5. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}
 
 ```json
 {{
-  "result": "当前步骤执行结果摘要",
+  "result": "当前步骤执行结果",
   "next_step_instruction": {next_step_instruction_hint}
 }}
 ```
@@ -115,18 +113,13 @@ def _build_subagent_instruction(
 - required：必须是 fields 的子集
 
 **Step 2：生成 local_constraint**
-- constraint.target 必须 ∈ expected_output_schema.fields
 - 每个 required 字段必须有 field_presence constraint
 - 禁止引用 fields 中未定义的字段
 - 不允许生成模糊约束（如：合理、尽量、适当）
-- 每条 constraint 必须有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
+- 每条 constraint 设定有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
 - 禁止为低风险任务添加结构性约束
-
-**Step 3：一致性自检**
-- 所有 constraint.target 是否都在 fields 中
-- required 字段是否都有 field_presence constraint
-- 是否存在模糊约束
-如发现不一致，修正后再输出。""")
+- 如果这个步骤是需要书写代码的任务，则构造对代码模块的预期测试效果的软约束（如任务是写一个双线程打印1~20，则你可以约束“代码执行结果是两个线程轮替打印1~20”）
+""")
 
     return "\n\n".join(parts)
 

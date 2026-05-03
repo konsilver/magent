@@ -23,6 +23,55 @@ logger = logging.getLogger(__name__)
 _MODEL_CACHE: dict[str, Tuple[OpenAIChatModel, float]] = {}
 _MODEL_CACHE_TTL = 60.0
 
+# Cache for provider config looked up by concrete model_name (e.g. "glm-5", "minimax-m27").
+# Key: model_name str. TTL: 60 seconds.  None value means "not found in DB".
+_PROVIDER_BY_MODEL_CACHE: dict[str, Tuple[Optional["ResolvedModelConfig"], float]] = {}
+_PROVIDER_BY_MODEL_TTL = 60.0
+
+
+def resolve_provider_by_model_name(model_name: str) -> Optional["ResolvedModelConfig"]:
+    """Look up a ModelProvider row by its model_name with a 60s TTL cache.
+
+    Avoids a raw DB query on every bare-agent / QA / Warmup creation cycle.
+    """
+    import time as _t
+    entry = _PROVIDER_BY_MODEL_CACHE.get(model_name)
+    if entry is not None and (_t.monotonic() - entry[1]) < _PROVIDER_BY_MODEL_TTL:
+        return entry[0]
+
+    cfg = None
+    try:
+        from core.config.model_config import ModelConfigService, ResolvedModelConfig
+        from core.db.engine import SessionLocal
+        from core.db.models import ModelProvider
+
+        # Try role-key resolution first (e.g. "plan_agent" → resolved model)
+        svc = ModelConfigService.get_instance()
+        cfg = svc.resolve(model_name)
+        if cfg is None:
+            with SessionLocal() as _db:
+                provider = _db.query(ModelProvider).filter(
+                    ModelProvider.model_name == model_name,
+                    ModelProvider.is_active == True,  # noqa: E712
+                    ModelProvider.provider_type == "chat",
+                ).first()
+                if provider:
+                    extra = dict(provider.extra_config or {})
+                    cfg = ResolvedModelConfig(
+                        base_url=provider.base_url,
+                        api_key=provider.api_key,
+                        model_name=provider.model_name,
+                        temperature=float(extra.get("temperature", 0.6)),
+                        max_tokens=int(extra.get("max_tokens", 8192)),
+                        timeout=int(extra.get("timeout", 120)),
+                        extra={},
+                    )
+    except Exception as exc:
+        logger.debug("[chat_models] resolve_provider_by_model_name(%r) failed: %s", model_name, exc)
+
+    _PROVIDER_BY_MODEL_CACHE[model_name] = (cfg, _t.monotonic())
+    return cfg
+
 
 def make_chat_model(
     *,

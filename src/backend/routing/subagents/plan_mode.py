@@ -68,7 +68,6 @@ from routing.subagents.plan_memory import (
 
 # ── LLM agent helpers ─────────────────────────────────────────────────────────
 from routing.subagents.plan_agents import (
-    _call_llm_agent,
     _run_user_profile_agent,
     _classify_user_intent,
     _run_planner,
