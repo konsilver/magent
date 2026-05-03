@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 from core.llm.agent_factory import create_agent_executor
 from core.llm.mcp_manager import close_clients
-from routing.streaming import _UsageTrackingModel
 from routing.subagents.plan_store import (
     _role_model,
     _parse_json_output,
@@ -44,8 +43,6 @@ async def _call_llm_agent(
         current_user_id=user_id,
         isolated=True,
     )
-    _usage_proxy = _UsageTrackingModel(agent.model)
-    agent.model = _usage_proxy
     try:
         from agentscope.message import Msg
         user_msg = Msg(name="user", content=prompt, role="user")
@@ -70,12 +67,8 @@ async def _call_llm_agent(
             text = str(reply)
         result = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         _elapsed = (_time.monotonic() - _t0) * 1000
-        _records = _usage_proxy.usage_records
-        _prompt_tok = sum(r.get("prompt_tokens", 0) for r in _records)
-        _completion_tok = sum(r.get("completion_tokens", 0) for r in _records)
-        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-                    _agent_label, _elapsed, len(result),
-                    _prompt_tok, _completion_tok, _prompt_tok + _completion_tok)
+        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d",
+                    _agent_label, _elapsed, len(result))
         return result
     except asyncio.TimeoutError:
         logger.warning("[%s] TIMEOUT after %ds", _agent_label, timeout)
@@ -105,8 +98,6 @@ async def _call_llm_agent_with_code_exec(
         isolated=True,
         code_exec_enabled=True,
     )
-    _usage_proxy = _UsageTrackingModel(agent.model)
-    agent.model = _usage_proxy
     try:
         from agentscope.message import Msg
         user_msg = Msg(name="user", content=prompt, role="user")
@@ -131,11 +122,8 @@ async def _call_llm_agent_with_code_exec(
             text = str(reply)
         result = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         _elapsed = (_time.monotonic() - _t0) * 1000
-        _records = _usage_proxy.usage_records
-        _prompt_tok = sum(r.get("prompt_tokens", 0) for r in _records)
-        _completion_tok = sum(r.get("completion_tokens", 0) for r in _records)
-        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d prompt_tokens=%d completion_tokens=%d",
-                    _agent_label, _elapsed, len(result), _prompt_tok, _completion_tok)
+        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d",
+                    _agent_label, _elapsed, len(result))
         return result
     except asyncio.TimeoutError:
         logger.warning("[%s] TIMEOUT after %ds", _agent_label, timeout)
