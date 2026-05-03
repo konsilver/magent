@@ -375,6 +375,7 @@ async def _run_subagent_step(
                 step_text = str(reply)
 
             step_text = re.sub(r"<think>.*?</think>", "", step_text, flags=re.DOTALL).strip()
+            step_text = _filter_reasoning_content(step_text)
             step_tool_calls = _collected_calls
 
             _exec_elapsed = (_time.monotonic() - _step_start) * 1000
@@ -446,6 +447,80 @@ async def _run_subagent_step(
     }
 
 
+_REASONING_LINE_PATTERN = re.compile(
+    r"^(好的|当然|让我|我来|我需要|我将|我会|我可以|我看到|我注意到|我了解"
+    r"|首先|其次|最后|根据|分析|理解|明白|现在|接下来|下面|以下"
+    r"|从.{1,20}中.*看到|从.{1,20}中.*可以|从context"
+    r"|okay|sure|let me|i will|i'll|i need to|i can see|i notice"
+    r"|first|second|finally|based on|alright|now|next)[，,。.：: \s]",
+    re.IGNORECASE,
+)
+
+_REASONING_PARA_PATTERN = re.compile(
+    r"^(步骤\d+已完成|步骤\d+：|现在我需要|我需要编写|让我设计|让我来|根据局部约束"
+    r"|根据历史|根据上述|根据context|根据以上|根据前面"
+    r"|用户要求我执行|用户要求我|用户希望我|用户想要我)",
+    re.IGNORECASE,
+)
+
+
+def _filter_reasoning_content(text: str) -> str:
+    """Remove reasoning/thinking paragraphs from anywhere in the text.
+
+    Reasoning paragraphs are contiguous blocks of lines that start with
+    meta-commentary patterns. Code blocks and JSON blocks are always preserved.
+    If filtering removes more than 80% of the text, the original is returned.
+    """
+    if not text:
+        return text
+
+    lines = text.splitlines(keepends=True)
+    result_lines = []
+    in_code_block = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Track code/json fences — always keep verbatim
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            result_lines.append(line)
+            i += 1
+            continue
+
+        if in_code_block:
+            result_lines.append(line)
+            i += 1
+            continue
+
+        # Check if this line starts a reasoning paragraph
+        if stripped and (
+            _REASONING_LINE_PATTERN.match(stripped)
+            or _REASONING_PARA_PATTERN.match(stripped)
+        ):
+            # Consume the whole reasoning paragraph (until blank line or next section)
+            i += 1
+            while i < len(lines):
+                next_stripped = lines[i].strip()
+                if not next_stripped:  # blank line ends the paragraph
+                    i += 1  # consume the blank line too
+                    break
+                if next_stripped.startswith("#") or next_stripped.startswith("```"):
+                    break  # new section starts — stop consuming
+                i += 1
+            continue
+
+        result_lines.append(line)
+        i += 1
+
+    candidate = "".join(result_lines).strip()
+    if not candidate or len(candidate) < len(text) * 0.20:
+        return text
+    return candidate
+
+
 def _strip_thinking_preamble(text: str, threshold: float = 0.70) -> str:
     """Strip model meta-commentary from the beginning of a response.
 
@@ -456,18 +531,11 @@ def _strip_thinking_preamble(text: str, threshold: float = 0.70) -> str:
     if not text:
         return text
 
-    _REASONING_PATTERNS = re.compile(
-        r"^(好的|当然|让我|我来|我需要|我将|我会|首先|根据|分析|理解|明白"
-        r"|okay|sure|let me|i will|i'll|i need to|first|based on|alright"
-        r"|以下是|下面是|接下来)[，,。.：: ]",
-        re.IGNORECASE,
-    )
-
     lines = text.splitlines()
     last_reasoning_idx = -1
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped and _REASONING_PATTERNS.match(stripped):
+        if stripped and _REASONING_LINE_PATTERN.match(stripped):
             last_reasoning_idx = i
 
     if last_reasoning_idx == -1:
