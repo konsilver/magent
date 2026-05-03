@@ -869,10 +869,6 @@ Step 3: 检查 local_constraint 中 priority="soft" 的条目
 Step 4: 对 context 中 user_goal 和 user 字段，结合当前步骤描述与执行结果，判断是否偏离整体任务目标
 - confidence < 0.8 → REPLAN
 
-Step 5: 检查代码执行效果（仅当 SubAgent 执行结果中包含代码执行记录时）
-- 若结果中明确提及 exit_code 非零（执行失败）或代码执行效果不符合约束，则 → REDO
-- 若结果中未提及代码执行，跳过此步
-
 注意：
 - 若以上步骤全部通过则verdict为PASS
 - 遍历发现所有错误，将发现的错误原因或修正建议汇总写入输出结构的suggestion字段
