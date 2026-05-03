@@ -713,7 +713,7 @@ async def astream_execute_plan(
                         final_solution_summary="",
                         forced=False,
                         key_constraints=[
-                            c.get("constraint", "")
+                            f"{c.get('target', '')}: {c.get('rule', '')}"
                             for c in board["check"].get("global_constraints", [])
                         ],
                         plan_id=plan_id,
@@ -1066,7 +1066,7 @@ async def astream_execute_plan(
                 final_solution_summary=last_step_text[:500],
                 forced=False,
                 key_constraints=[
-                    c.get("constraint", "")
+                    f"{c.get('target', '')}: {c.get('rule', '')}"
                     for c in board["check"].get("global_constraints", [])
                 ],
                 plan_id=plan_id,

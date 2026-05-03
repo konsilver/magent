@@ -9,16 +9,17 @@
       "constraint": [  
         "constraint_type": "field_presence | value_range | format | dependency",//字段类型
         "target": "...",  //字段
-        "rule": "..."   //字段的规则
+        "rule": "...",  //字段的规则
+        "priority": "hard | soft" //每条约束独立设置软硬属性，软硬约束比例hard >= 60%，soft <= 40%
       ],
           /**例如：
             {
               "constraint_type": "field_presence",
               "target": "attractions",
-              "rule": "must_exist"
+              "rule": "must_exist",
+              "priority": "hard"
             }
           **/
-      "priority": "hard | soft", //限制软硬约束比例hard >= 60%，soft <= 40%
     },
 
     "expected_output_schema": {

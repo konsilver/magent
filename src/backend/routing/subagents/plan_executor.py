@@ -71,10 +71,10 @@ def _build_subagent_instruction(
       {{
         "constraint_type": "field_presence | value_range | format | dependency",
         "target": "字段名",
-        "rule": "字段规则"
+        "rule": "字段规则",
+        "priority": "hard | soft"
       }}
-    ],
-    "priority": "hard | soft"
+    ]
   }},
   "expected_output_schema": {{
     "fields": ["字段1", "字段2"],
@@ -112,7 +112,7 @@ def _build_subagent_instruction(
 - 每个 required 字段必须有 field_presence constraint
 - 禁止引用 fields 中未定义的字段
 - 不允许生成模糊约束（如：合理、尽量、适当）
-- 软硬约束比例：hard ≥ 60%，soft ≤ 40%
+- 每条 constraint 必须有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
 - 禁止为低风险任务添加结构性约束
 
 **Step 3：一致性自检**
@@ -146,8 +146,8 @@ async def _run_subagent_step(
         retrieved_memory,
     )
 
-    logger.info("[SubAgent] START step=%d(%s) id=%s model=%s prompt_chars=%d\n--- PROMPT ---\n%s\n--- PROMPT END ---",
-                step.step_order, step.title, step.step_id, model_name, len(instruction), instruction)
+    logger.info("[SubAgent] START step=%d(%s) id=%s model=%s prompt_chars=%d",
+                step.step_order, step.title, step.step_id, model_name, len(instruction))
 
     step_text = ""
     step_tool_calls: List[Dict] = []

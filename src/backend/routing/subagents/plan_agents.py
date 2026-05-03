@@ -87,17 +87,19 @@ async def _call_llm_agent_with_code_exec(
     timeout: int = 120,
     _agent_label: str = "LLMAgentCodeExec",
 ) -> str:
-    """Call an agent with execute_code tool enabled, return stripped text output."""
+    """Call an agent with execute_code tool enabled, return stripped text output.
+
+    Uses the bare-agent fast path (no MCP connections) and registers only the
+    execute_code tool, avoiding latency and failures from unrelated MCP servers.
+    """
     _t0 = _time.monotonic()
     logger.info("[%s] START model=%s user=%s prompt_chars=%d timeout=%ds",
                 _agent_label, model_name, user_id, len(prompt), timeout)
-    agent, mcp_clients = await create_agent_executor(
-        disable_tools=False,
-        model_name=model_name,
-        current_user_id=user_id,
-        isolated=True,
-        code_exec_enabled=True,
-    )
+    from core.llm.agent_factory import _create_bare_llm_agent
+    from core.llm.tool import register_execute_code_tools
+    agent, mcp_clients = await _create_bare_llm_agent(model_name, user_id)
+    agent.max_iters = 5
+    register_execute_code_tools(agent.toolkit, user_id=user_id)
     try:
         from agentscope.message import Msg
         user_msg = Msg(name="user", content=prompt, role="user")
@@ -586,11 +588,11 @@ _WARMUP_PROMPT_TEMPLATE = """你是 Warmup Agent，你的任务是：
 ### Step 1：判断任务风险等级
 根据任务整体性质判断：
 - **低风险**：推荐书籍、回答问题、解释概念、给出建议等——输出即使有偏差用户可轻易识别和纠正
-  → global_constraints ≤ 2 条（仅内容质量类），local_constraint priority = "soft"，expected_output_schema.fields 可为空
+  → global_constraints ≤ 2 条（仅内容质量类），local_constraint 中约束以 priority="soft" 为主，expected_output_schema.fields 可为空
 - **中风险**：数据分析、报告撰写、方案设计等——输出错误有一定代价但可补救
-  → global_constraints ≤ 4 条，priority 可有部分 "hard"
+  → global_constraints ≤ 4 条，可有部分 priority="hard" 的约束
 - **高风险**：代码执行、系统设计（用户已明确定义的架构/接口规范）、精确计算、需调用外部工具——输出错误代价高或难以发现
-  → global_constraints 不限，priority = "hard"，schema 详细
+  → global_constraints 不限，约束 priority="hard"，schema 详细
 
 ### Step 2：生成 expected_output_schema（先于 constraint 生成）
 - fields：列出第一步输出应包含的所有字段
@@ -602,12 +604,13 @@ _WARMUP_PROMPT_TEMPLATE = """你是 Warmup Agent，你的任务是：
 - 每个 required 字段必须有对应的 field_presence constraint
 - 禁止引用 fields 中未定义的字段
 - 不允许生成模糊约束（如：合理、尽量、适当）
+- 每条 constraint 必须有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
 - 低风险任务禁止添加结构性约束
 
 ### Step 4：生成 global_constraints
 规则：
 - 约束要真正可验证，避免空泛描述（如"内容准确"不如"必须给出3条以上具体建议"）
-- 软硬约束比例：hard ≥ 60%，soft ≤ 40%
+- 每条 global_constraint 必须有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
 - **必须包含一条输出长度约束**（根据步骤总数 {step_count} 条）：
   - 1~2 步：每步输出无字数硬限制
   - 3 步：每步输出建议 ≤ 400 字
@@ -628,13 +631,9 @@ _WARMUP_PROMPT_TEMPLATE = """你是 Warmup Agent，你的任务是：
 {{
   "global_constraints": [
     {{
-      "constraint": [
-        {{
-          "constraint_type": "field_presence | value_range | format | dependency",
-          "target": "字段名",
-          "rule": "字段规则"
-        }}
-      ],
+      "constraint_type": "field_presence | value_range | format | dependency",
+      "target": "字段名",
+      "rule": "字段规则",
       "priority": "hard | soft"
     }}
   ],
@@ -644,10 +643,10 @@ _WARMUP_PROMPT_TEMPLATE = """你是 Warmup Agent，你的任务是：
         {{
           "constraint_type": "field_presence | value_range | format | dependency",
           "target": "字段名",
-          "rule": "字段规则"
+          "rule": "字段规则",
+          "priority": "hard | soft"
         }}
-      ],
-      "priority": "hard | soft"
+      ]
     }},
     "expected_output_schema": {{
       "fields": ["字段1", "字段2"],
@@ -730,11 +729,11 @@ _QA_PROMPT_TEMPLATE = """你是 QA Agent，负责验证 SubAgent 的执行结果
 {result}
 
 ## 本步骤约束（上一个 agent 定义，预设结构如下）
-约束结构说明：
+约束结构说明（每条 constraint 有独立的 priority）：
 - constraint_type: field_presence | value_range | format | dependency
 - target: 字段名
 - rule: 字段规则
-- priority: hard | soft
+- priority: hard | soft（每条约束独立设置）
 
 local_constraint:
 {local_constraint}
@@ -748,10 +747,11 @@ Step 1: 检查 expected_output_schema
 - 若 schema 为空或 fields 为空列表，跳过此步
 - 否则检查结果是否包含 required 字段（不满足 → REDO）
 
-Step 2: 检查 global_constraints（priority=hard）+ local_constraint（priority=hard）
-- 任意一条 hard 约束不满足 → REDO
+Step 2: 检查 global_constraints 中 priority="hard" 的条目 + local_constraint 中 priority="hard" 的条目
+- 注意：每条 constraint 有自己独立的 priority 字段
+- 任意一条 priority="hard" 的约束不满足 → REDO
 
-Step 3: 检查 local_constraint 中 priority=soft 的部分，使用 LLM judge
+Step 3: 检查 local_constraint 中 priority="soft" 的条目，使用 LLM judge
 - confidence < 0.6 视为失败 → REDO
 
 Step 4: 对 context 中 user 和 plan 字段整体进行 LLM judge，判断是否偏离整体任务目标

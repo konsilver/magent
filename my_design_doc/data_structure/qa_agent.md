@@ -14,21 +14,22 @@ output（非全局检查）:
 //你的判断依据已经被其他agent定义，一般分下面两种：
 
 
-//这种为hard硬约束时必须遵守，如果是soft软约束则通过LLM judge判断是否符合
+//每条constraint有自己独立的priority，hard硬约束时必须遵守，soft软约束则通过LLM judge判断是否符合
 constraints": {
   "constraint": [  
     "constraint_type": "field_presence | value_range | format | dependency",//字段类型
     "target": "...",  //字段
-    "rule": "..."   //字段的规则
+    "rule": "...",  //字段的规则
+    "priority": "hard | soft" //每条约束独立设置，软硬约束比例hard >= 60%，soft <= 40%
   ],
       /**例如：
         {
           "constraint_type": "field_presence",
           "target": "attractions",
-          "rule": "must_exist"
+          "rule": "must_exist",
+          "priority": "hard"
         }
       **/
-  "priority": "hard | soft", //限制软硬约束比例hard >= 60%，soft <= 40%
 },
 
 
