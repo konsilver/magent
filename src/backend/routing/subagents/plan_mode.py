@@ -636,10 +636,7 @@ async def astream_execute_plan(
                     if qa_verdict == "REDO" and redo_count < _MAX_REDO_PER_STEP:
                         redo_count += 1
                         logger.warning("[QA] last-step REDO %d/%d", redo_count, _MAX_REDO_PER_STEP)
-                        _new_suggestions = "; ".join(
-                            r.get("suggestion", "") for r in qa_data.get("failure_reason", []) if r.get("suggestion")
-                        )
-                        board["plan"]["suggestion"] = _new_suggestions or "（无建议）"
+                        board["plan"]["suggestion"] = qa_data.get("suggestion") or "（无建议）"
                         yield {"type": "plan_step_progress", "step_id": step.step_id,
                                "delta": f"\nQA 验证未通过，正在重试最后一步 ({redo_count}/{_MAX_REDO_PER_STEP})...\n"}
                         continue
@@ -655,11 +652,8 @@ async def astream_execute_plan(
                 if qa_verdict == "REDO":
                     redo_count += 1
                     logger.warning("[QA] REDO step=%d redo=%d", step.step_order, redo_count)
-                    _new_suggestions = "; ".join(
-                        r.get("suggestion", "") for r in qa_data.get("failure_reason", []) if r.get("suggestion")
-                    )
                     # 写入 board["plan"]["suggestion"]，供 subagent 重做时读取
-                    board["plan"]["suggestion"] = _new_suggestions or "（无建议）"
+                    board["plan"]["suggestion"] = qa_data.get("suggestion") or "（无建议）"
                     if redo_count >= _MAX_REDO_PER_STEP:
                         qa_verdict = "REPLAN"
                         logger.warning("[QA] REDO limit reached → escalate to REPLAN")
@@ -682,11 +676,8 @@ async def astream_execute_plan(
 
                 # 确保 board 中记录了 redo_id 和 suggestion（QA 直接判断 REPLAN 时在此写入）
                 if board["plan"].get("redo_id", -1) == -1:
-                    _replan_suggestions = "; ".join(
-                        r.get("suggestion", "") for r in qa_data.get("failure_reason", []) if r.get("suggestion")
-                    )
                     board["plan"]["redo_id"] = step.step_order
-                    board["plan"]["suggestion"] = _replan_suggestions or "（无建议）"
+                    board["plan"]["suggestion"] = qa_data.get("suggestion") or "（无建议）"
 
                 yield {
                     "type": "plan_step_agent_activity",
@@ -700,9 +691,7 @@ async def astream_execute_plan(
                     logger.warning("[plan-exec] Global reset #%d triggered at step %d",
                                    global_reset_count, step.step_order)
 
-                    failure_summary = "; ".join(
-                        r.get("description", "") for r in qa_data.get("failure_reason", []) if r.get("description")
-                    ) or "执行方案无法达到预期效果"
+                    failure_summary = qa_data.get("suggestion") or "执行方案无法达到预期效果"
 
                     _failed_plan_suggestion = f"该方案在第{step.step_order}步触发全局重置，原因：{failure_summary}"
                     _save_task_memory_background(
@@ -901,10 +890,7 @@ async def astream_execute_plan(
                                 _prefetch_memory_task.cancel()
                             _prefetch_memory_task = None
                             _update_stored_step(plan_id, steps[step_idx].step_id, status="running", started_at=datetime.utcnow().isoformat())
-                            _replan_reason = "; ".join(
-                                r.get("suggestion", "") or r.get("description", "")
-                                for r in qa_data.get("failure_reason", []) if r.get("suggestion") or r.get("description")
-                            )
+                            _replan_reason = qa_data.get("suggestion") or ""
                             yield {
                                 "type": "plan_replan",
                                 "plan_id": plan_id,
@@ -937,10 +923,7 @@ async def astream_execute_plan(
                     ]
                     board_step["_qa_passed"] = (qa_verdict == "PASS")
                     board_step["_had_redo"] = (redo_count > 0)
-                    board_step["_qa_suggestion"] = (
-                        str(qa_data.get("failure_reason", [{}])[0].get("suggestion", ""))
-                        if qa_verdict != "PASS" else ""
-                    )
+                    board_step["_qa_suggestion"] = qa_data.get("suggestion", "") if qa_verdict != "PASS" else ""
                     board_step["_step_description"] = step.description or step.title
                     board_step["_local_constraint"] = current_local_constraint
                     break
