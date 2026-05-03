@@ -14,7 +14,6 @@ from typing import Dict
 MCP_SERVER_DISPLAY_NAMES: Dict[str, str] = {
     "retrieve_dataset_content":  "知识库检索",
     "internet_search":           "互联网搜索",
-    "ai_chain_information_mcp":  "产业知识中心查询",
     "web_fetch":                 "网站信息抓取",
 }
 
@@ -22,7 +21,6 @@ MCP_SERVER_DISPLAY_NAMES: Dict[str, str] = {
 MCP_SERVER_DESCRIPTIONS: Dict[str, str] = {
     "retrieve_dataset_content":  "从公有/私有知识库中语义检索政策文件、产业报告及用户上传文档，支持混合检索与重排序。",
     "internet_search":           "通过互联网实时搜索公开网页、新闻及财经资讯，作为数据库与知识库之外的信息兜底。",
-    "ai_chain_information_mcp":  "获取产业链全景分析报告、核心数据指标、产业动态资讯、AI 领域热点聚合及企业画像查询。",
     "web_fetch":                 "抓取指定网页 URL 的内容，提取正文文本或 Markdown，支持搜索引擎结果页解析。",
 }
 
@@ -34,19 +32,6 @@ TOOL_DISPLAY_NAMES: Dict[str, str] = {
     "retrieve_dataset_content":   "公有知识库检索",
     "list_datasets":              "查看知识库列表",
     "internet_search":            "互联网搜索",
-    "get_chain_information":      "产业链分析",
-    "get_industry_news":          "产业资讯",
-    "get_latest_ai_news":         "AI 热点聚合",
-    "search_company":             "企业搜索",
-    "get_company_base_info":      "企业基本信息",
-    "get_company_business_analysis": "企业经营分析",
-    "get_company_tech_insight":   "企业技术洞察",
-    "get_company_funding":        "企业资金穿透",
-    "get_company_risk_warning":   "企业风险预警",
-    # 产业链 bundle 子工具（workflow.py 旧映射）
-    "get_ai_chain_information":   "区块链信息查询",
-    "get_latest_ai_chain_info":   "最新区块链动态",
-    "get_ai_chain_news":          "区块链新闻搜索",
     # 内置工具
     "get_skills":                 "查询可用技能",
     "get_agents":                 "查询可用智能体",

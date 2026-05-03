@@ -147,6 +147,7 @@ async def _run_subagent_step(
     _plan_subagent_log_id: str,
     _all_mcp_clients: List,
     code_exec_enabled: bool = False,
+    step_complexity: str = "simple",
 ) -> AsyncIterator[Dict[str, Any]]:
     """Execute a single SubAgent step, yield SSE events."""
     instruction = _build_subagent_instruction(
@@ -212,11 +213,12 @@ async def _run_subagent_step(
 
         if not _use_pool:
             _create_t0 = _time.monotonic()
-            # 非隔离模式（isolated=False）可从 MCP pool 缓存直接构建 toolkit，
-            # 避免 isolated=True 时重新 spawn MCP 子进程的高延迟
+            # complex 步骤注入全部 MCP；simple 步骤传空列表禁用 MCP
+            # skills 在计划模式下始终禁用（传空列表，避免 None 触发全量加载）
+            _mcp_ids = None if step_complexity == "complex" else []
             agent, mcp_clients = await create_agent_executor(
-                enabled_mcp_ids=None,
-                enabled_skill_ids=None,
+                enabled_mcp_ids=_mcp_ids,
+                enabled_skill_ids=[],
                 enabled_kb_ids=enabled_kb_ids,
                 current_user_id=user_id,
                 model_name=model_name,

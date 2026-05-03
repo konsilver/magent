@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -46,11 +46,6 @@ from routing.registry import AgentSpec
 
 load_dotenv()
 
-_MCP_SERVER_BLOCKLIST: Set[str] = {
-    "ai_chain_information_mcp",
-}
-
-
 def _effective_mcp_server_keys(
     cfg,
     agent_spec: Optional[AgentSpec],
@@ -58,15 +53,14 @@ def _effective_mcp_server_keys(
     enabled_kb_ids: Optional[list[str]] = None,
 ) -> list[str]:
     all_servers = McpServerConfigService.get_instance().get_all_servers(enabled_only=True)
-    all_keys = [k for k in all_servers.keys() if k not in _MCP_SERVER_BLOCKLIST]
+    all_keys = list(all_servers.keys())
 
-    # NOTE: Prompt config mcp_servers.enabled whitelist is intentionally
-    # skipped here. All MCP servers are now DB-managed via admin panel,
-    # and the catalog + user override + runtime filters provide sufficient
-    # gating. The legacy prompt config whitelist would block newly added
-    # admin MCP servers that aren't in the static config.
-
-    # All users have access to all enabled MCP servers — no per-user filtering.
+    # enabled_mcp_ids=[] means explicitly disable all MCP (e.g. plan-mode simple subagents)
+    # enabled_mcp_ids=None means no restriction — load all (main agent default)
+    if enabled_mcp_ids is not None:
+        if len(enabled_mcp_ids) == 0:
+            return []
+        return [k for k in all_keys if k in enabled_mcp_ids]
 
     return all_keys
 
@@ -446,6 +440,8 @@ async def create_agent_executor(
                   _elapsed(), len(mcp_clients), len(http_clients))
 
     # ── Phase 3: Skill registration (fast — metadata already cached) ──
+    # enabled_skill_ids=None → load all (main agent default)
+    # enabled_skill_ids=[]  → disable all (plan-mode subagents)
     skill_ids_to_register = enabled_skill_ids
     if skill_ids_to_register is None:
         skill_ids_to_register = _effective_main_available_skills()

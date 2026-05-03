@@ -593,6 +593,7 @@ async def astream_execute_plan(
                     _plan_subagent_log_id=_plan_subagent_log_id,
                     _all_mcp_clients=_all_mcp_clients,
                     code_exec_enabled=(_step_complexity == "complex"),
+                    step_complexity=_step_complexity,
                 ):
                     if event["type"] == "_step_result":
                         step_text = event["step_text"]

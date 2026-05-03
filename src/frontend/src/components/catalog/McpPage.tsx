@@ -9,7 +9,6 @@ const MCP_ICONS: Record<string, string> = {
   query_database: '/home/mcp/数据库.svg',
   retrieve_dataset_content: '/home/mcp/知识.svg',
   internet_search: '/home/mcp/互联网.svg',
-  ai_chain_information_mcp: '/home/mcp/产业链.svg',
   generate_chart_tool: '/home/mcp/数据.svg',
   report_export_mcp: '/home/mcp/报告.svg',
   web_fetch: '/home/mcp/来源.svg',

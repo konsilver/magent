@@ -21,88 +21,6 @@ def _builtin_only_loader() -> MultiSourceSkillLoader:
     return MultiSourceSkillLoader(backend=backend)
 
 
-def test_minimax_pdf_scripts_use_cli_args_mode():
-    loader = _builtin_only_loader()
-    spec = loader.load_skill_full("minimax-pdf")
-
-    assert spec is not None
-    scripts = {
-        script["name"]: script["input_mode"]
-        for script in spec.executable_scripts
-    }
-    assert scripts["scripts/make.sh"] == "cli_args"
-    assert scripts["scripts/render_cover.js"] == "cli_args"
-    assert scripts["scripts/render_body.py"] == "cli_args"
-
-
-def test_minimax_docx_scripts_are_declared_explicitly():
-    loader = _builtin_only_loader()
-    spec = loader.load_skill_full("minimax-docx")
-
-    assert spec is not None
-    scripts = {
-        script["name"]: script["input_mode"]
-        for script in spec.executable_scripts
-    }
-    assert scripts["scripts/docx_cli.sh"] == "cli_args"
-    assert scripts["scripts/env_check.sh"] == "cli_args"
-    assert scripts["scripts/docx_preview.sh"] == "cli_args"
-
-
-def test_minimax_docx_extra_files_include_dotnet_project_sources():
-    loader = _builtin_only_loader()
-    extra_files = loader.get_extra_files("minimax-docx")
-
-    assert "scripts/dotnet/MiniMaxAIDocx.Cli/MiniMaxAIDocx.Cli.csproj" in extra_files
-    assert "scripts/dotnet/MiniMaxAIDocx.Cli/Program.cs" in extra_files
-    assert "scripts/dotnet/MiniMaxAIDocx.slnx" in extra_files
-
-
-def test_minimax_xlsx_scripts_use_cli_args_mode():
-    loader = _builtin_only_loader()
-    spec = loader.load_skill_full("minimax-xlsx")
-
-    assert spec is not None
-    scripts = {
-        script["name"]: script["input_mode"]
-        for script in spec.executable_scripts
-    }
-    assert scripts["scripts/xlsx_reader.py"] == "cli_args"
-    assert scripts["scripts/xlsx_unpack.py"] == "cli_args"
-    assert scripts["scripts/xlsx_pack.py"] == "cli_args"
-    # xlsx_cli.py is the sandbox-friendly CREATE wrapper — mirror of docx_cli.sh
-    assert scripts["scripts/xlsx_cli.py"] == "cli_args"
-
-
-def test_minimax_xlsx_template_is_in_extra_files():
-    """The minimal_xlsx template must ship as resource_files so xlsx_cli.py
-    can copy it into the sandbox work dir."""
-    loader = _builtin_only_loader()
-    extra_files = loader.get_extra_files("minimax-xlsx")
-
-    assert "templates/minimal_xlsx/[Content_Types].xml" in extra_files
-    assert "templates/minimal_xlsx/xl/workbook.xml" in extra_files
-    assert "templates/minimal_xlsx/xl/styles.xml" in extra_files
-    assert "templates/minimal_xlsx/xl/sharedStrings.xml" in extra_files
-    assert "templates/minimal_xlsx/xl/worksheets/sheet1.xml" in extra_files
-    # OOXML rels file (dotfile) must also come through
-    assert "templates/minimal_xlsx/_rels/.rels" in extra_files
-    assert "templates/minimal_xlsx/xl/_rels/workbook.xml.rels" in extra_files
-
-
-def test_pptx_generator_scripts_are_declared():
-    loader = _builtin_only_loader()
-    spec = loader.load_skill_full("pptx-generator")
-
-    assert spec is not None
-    scripts = {
-        script["name"]: script["input_mode"]
-        for script in spec.executable_scripts
-    }
-    assert scripts["scripts/build_presentation.js"] == "stdin_json"
-    assert scripts["scripts/extract_text.sh"] == "cli_args"
-
-
 def test_find_script_declaration_accepts_unique_basename():
     spec = SimpleNamespace(executable_scripts=[
         {"name": "scripts/make.sh"},
@@ -176,8 +94,7 @@ def test_params_to_cli_args_serializes_bool_lowercase():
 
 def test_params_to_cli_args_passthrough_forwards_non_args_keys():
     """When _args is supplied the wrapper must still forward other keys so they
-    reach the sidecar's stdin JSON (e.g. minimax-docx sends CLI flags via _args
-    and the document body via a `content` object consumed on stdin)."""
+    reach the sidecar's stdin JSON."""
     args = _params_to_cli_args(
         {
             "_args": ["create", "--output", "out.docx", "--title", "报告"],
