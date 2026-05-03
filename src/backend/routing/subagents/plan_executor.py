@@ -106,7 +106,7 @@ def _build_subagent_instruction(
 
     parts.append(f"""## 执行要求
 1. 聚焦当前步骤目标，不执行其他步骤的任务
-2. 如果你的if_code_exc为false，禁止调用代码执行工具
+2. 如果你的if_code_exc为false，禁止调用代码执行工具，如果为tru，则必须执行代码检验执行结果
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
 3. context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，结合这些输出完成你的任务
 4. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}

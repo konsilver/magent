@@ -915,7 +915,13 @@ async def astream_execute_plan(
 
             # ── Finalize step ─────────────────────────────────────────────────
             narrative_text, subagent_json = _extract_next_step_instruction(step_text)
-            display_text = _strip_thinking_preamble(narrative_text if narrative_text else step_text)
+            _is_final_step = (step_idx == len(steps) - 1)
+            # 最后一步：优先从 subagent_json["result"] 提取干净结果，避免输出中的推理过程
+            _raw_result = subagent_json.get("result", "") if subagent_json else ""
+            if _is_final_step and _raw_result:
+                display_text = _raw_result if isinstance(_raw_result, str) else json.dumps(_raw_result, ensure_ascii=False)
+            else:
+                display_text = _strip_thinking_preamble(narrative_text if narrative_text else step_text)
 
             step_result_summary = subagent_json.get("result", "") if subagent_json else ""
             for board_step in board["plan"]["steps"]:
