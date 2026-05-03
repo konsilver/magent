@@ -48,12 +48,25 @@ class _UsageTrackingModel:
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         result = await self._real(*args, **kwargs)
 
+        # Verify the result is a real async iterable (not just has the attribute).
+        # Some providers (e.g. minimax) return objects whose __aiter__ raises
+        # AttributeError when called, even though hasattr() returns True.
+        # We check by calling __aiter__() to get the iterator; if it raises we
+        # fall through to the non-streaming path.
+        _aiter = None
         if hasattr(result, "__aiter__"):
+            try:
+                _aiter = result.__aiter__()
+            except (AttributeError, TypeError):
+                pass
+
+        if _aiter is not None:
             records = self.usage_records
+            _the_iter = _aiter  # already-obtained iterator, avoid double __aiter__ call
 
             async def _wrap_gen():
                 last_usage: Dict[str, int] | None = None
-                async for chat_resp in result:
+                async for chat_resp in _the_iter:
                     _u = getattr(chat_resp, "usage", None)
                     if _u is not None:
                         last_usage = {
