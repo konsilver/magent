@@ -85,7 +85,7 @@ def _build_subagent_instruction(
 
     _code_exec_hint = (
         "\n7. 若你在本步骤中执行了代码，**必须**在输出末尾 JSON 块的 \"result\" 字段中"
-        "包含code字段与code_result，若代码长度超过30行则改为包含简化的伪代码，若代码执行结果超过100字则改为简化的结果，若代码执行失败则结果填写执行失败"
+        "包含code字段与code_result，若代码长度超过50行则改为包含简化的伪代码，若代码执行结果超过100字则改为简化的结果，若代码执行失败则结果填写执行失败"
     ) if code_exec_enabled else ""
 
     parts.append(f"""## 执行要求
