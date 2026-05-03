@@ -378,6 +378,62 @@ async def retrieve_memories(
     return ""
 
 
+async def retrieve_memories_with_ids(
+    user_id: str,
+    query: str,
+    limit: int = 10,
+    min_score: float = 0.4,
+    memory_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """与 retrieve_memories 逻辑相同，但返回结构化条目列表（含 id、memory、score）。
+
+    用于需要精确删除的场景（如 user_profile 写入时只删检索到的条目）。
+    memory_type: 若指定则只返回该类型的条目（按 metadata.type 过滤）。
+    失败时返回空列表。
+    """
+    if not MEM0_ENABLED or not user_id:
+        return []
+
+    for attempt in range(2):
+        memory = _get_memory()
+        if memory is None:
+            return []
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: memory.search(query, filters={"user_id": user_id}, top_k=limit)
+            )
+            items = result.get("results", []) if isinstance(result, dict) else result
+            if not isinstance(items, list):
+                return []
+
+            filtered: List[Dict[str, Any]] = []
+            for m in items:
+                if not isinstance(m, dict):
+                    continue
+                score = m.get("score", 1.0)
+                if score < min_score:
+                    continue
+                if memory_type is not None:
+                    item_type = (m.get("metadata") or {}).get("type")
+                    if item_type != memory_type:
+                        continue
+                m["_adjusted_score"] = _apply_time_decay(m, score)
+                filtered.append(m)
+
+            filtered.sort(key=lambda x: x.get("_adjusted_score", 0), reverse=True)
+            return filtered[:5]
+        except Exception as exc:
+            if attempt == 0 and _is_connection_error(exc):
+                logger.warning("[MemoryService] Milvus 连接断开，正在重置并重试: %s", exc)
+                _reset_memory()
+                continue
+            logger.warning("[MemoryService] retrieve_memories_with_ids 失败: %s", exc)
+            return []
+    return []
+
+
 def _apply_time_decay(item: dict, base_score: float) -> float:
     """为较新的记忆增加权重。半衰期约 70 天。"""
     updated_at = item.get("updated_at") or item.get("created_at") or ""
@@ -613,6 +669,51 @@ async def save_conversation(
                 _reset_memory()
                 continue
             logger.error("[MemoryService] 记忆保存失败: %s", exc, exc_info=True)
+
+
+async def save_facts_direct(
+    user_id: str,
+    facts: List[str],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> int:
+    """跳过 LLM 提取，将 facts 列表中的每条文本直接写入 Milvus，一条 fact 对应一条记录。
+
+    使用 mem0 的 infer=False 模式，完全绕过事实提取 LLM，写入条数等于 len(facts)。
+    返回实际写入的条数，失败时返回 0。
+    """
+    if not MEM0_ENABLED or not user_id or not facts:
+        return 0
+
+    written = 0
+    for fact in facts:
+        if not fact or not fact.strip():
+            continue
+        messages = [{"role": "user", "content": fact.strip()}]
+        for attempt in range(2):
+            memory = _get_memory()
+            if memory is None:
+                break
+            try:
+                loop = asyncio.get_running_loop()
+                add_kwargs: dict = {"user_id": user_id, "infer": False}
+                if metadata:
+                    add_kwargs["metadata"] = metadata
+                await loop.run_in_executor(
+                    None,
+                    lambda m=messages, kw=add_kwargs: memory.add(m, **kw)
+                )
+                written += 1
+                break
+            except Exception as exc:
+                if attempt == 0 and _is_connection_error(exc):
+                    logger.warning("[MemoryService] Milvus 连接断开，正在重置并重试: %s", exc)
+                    _reset_memory()
+                    continue
+                logger.warning("[MemoryService] save_facts_direct 单条写入失败: %s | fact=%s", exc, fact[:60])
+                break
+
+    logger.info("[MemoryService] save_facts_direct: user=%s, total=%d, written=%d", user_id, len(facts), written)
+    return written
 
 
 async def get_all_memories(user_id: str) -> List[dict]:

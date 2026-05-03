@@ -107,7 +107,7 @@ async def _retrieve_plan_memory(user_id: str, task_description: str) -> Dict[str
             text = line.lstrip("- ").strip()
             if not text:
                 continue
-            _m = _re.search(r"plan_id=([a-f0-9]{8,16})", text)
+            _m = _re.search(r"plan_id=(plan_[a-f0-9]{16})", text)
             if _m:
                 plan_ids_from_kv.append(_m.group(1))
             if "replan" in text.lower() or "失败" in text or "失败模式" in text:
@@ -215,7 +215,7 @@ def _save_task_memory_background(
                     for i, n in enumerate(raw_nodes)
                 ]
 
-            pid = (plan_id or "")[:16]
+            pid = plan_id or ""
 
             _suggestion_part = f"优化建议：{plan_suggestion[:150]}" if plan_suggestion else (
                 f"失败摘要：{failure_reason[:150]}" if failure_reason else ""
@@ -237,7 +237,8 @@ def _save_task_memory_background(
 
             if MEM0_GRAPH_ENABLED and pid:
                 from core.llm.memory import write_plan_graph
-                suggestion_for_graph = (plan_suggestion or failure_reason or "") if not success else plan_suggestion
+                # 成功计划不写 Suggestion 节点；失败/replan 才写
+                suggestion_for_graph = (plan_suggestion or failure_reason or "") if not success else ""
                 await write_plan_graph(
                     user_id=user_id,
                     plan_id=pid,
@@ -308,7 +309,7 @@ def _save_step_memory_background(
 
 
 def _save_user_profile_background(user_id: str, profile_update: Dict, model_name: str = "") -> None:
-    """Fire-and-forget: merge urgent + mem via LLM, delete old entries, write merged result."""
+    """Fire-and-forget: 用 urgent 检索相似的 user_profile 条目，LLM 合并后只替换检索到的部分。"""
     if not _mem0_enabled() or not user_id:
         return
 
@@ -316,18 +317,24 @@ def _save_user_profile_background(user_id: str, profile_update: Dict, model_name
     if not urgent:
         return
 
-    mem = profile_update.get("mem") or ""
-
     _USER_PROFILE_METADATA = {"type": "user_profile"}
 
     async def _save() -> None:
         try:
-            from core.llm.memory import save_conversation, get_memories_by_metadata, delete_memory
+            from core.llm.memory import save_facts_direct, retrieve_memories_with_ids, delete_memory
             from routing.subagents.plan_agents import _call_llm_agent
             from core.config import settings
 
+            # Step 1: 用 urgent 作为 query 检索语义相似的 user_profile 条目（含 id）
+            retrieved_items = await retrieve_memories_with_ids(
+                user_id, urgent, limit=4, min_score=0.4, memory_type="user_profile"
+            )
+            retrieved_texts = [item.get("memory", "") for item in retrieved_items if item.get("memory")]
+            retrieved_mem_str = "\n".join(f"- {t}" for t in retrieved_texts) if retrieved_texts else "（暂无相关历史特征）"
+
+            # Step 2: LLM 合并 urgent 与检索到的条目（冲突以 urgent 为准）
             merge_prompt = _USER_PROFILE_MERGE_PROMPT.format(
-                mem=mem or "（暂无历史特征）",
+                mem=retrieved_mem_str,
                 urgent=urgent,
             )
             _model = model_name or settings.llm.roles.user_profile or settings.llm.base_model_name
@@ -337,46 +344,20 @@ def _save_user_profile_background(user_id: str, profile_update: Dict, model_name
             if not facts:
                 facts = [urgent]
 
-            try:
-                old_entries = await get_memories_by_metadata(user_id, _USER_PROFILE_METADATA)
-                for entry in old_entries:
-                    mid = entry.get("id") or entry.get("memory_id")
-                    if mid:
+            # Step 3: 只删除检索到的 top-k 条目（它们已被合并进 facts，保留其余条目）
+            for entry in retrieved_items:
+                mid = entry.get("id") or entry.get("memory_id")
+                if mid:
+                    try:
                         await delete_memory(mid)
-            except Exception as del_exc:
-                logger.debug("[Memory] user profile delete old failed (non-critical): %s", del_exc)
+                    except Exception as del_exc:
+                        logger.debug("[Memory] user profile delete entry %s failed: %s", mid, del_exc)
 
-            facts_text = "\n".join(f"- {f}" for f in facts)
-            user_msg = "用户特征更新"
-            assistant_msg = f"用户特征（合并后）：\n{facts_text}"
-            await save_conversation(user_id, user_msg, assistant_msg, metadata=_USER_PROFILE_METADATA)
+            # Step 4: 逐条直接写入，跳过 mem0 的二次 LLM 提取，写入条数 = len(facts)
+            written = await save_facts_direct(user_id, facts, metadata=_USER_PROFILE_METADATA)
 
-            # mem0 的 add() 不保证 metadata 透传到 Milvus scalar 字段，
-            # 写入后立刻查找最新条目并调用 update() 补打 metadata 标签。
-            try:
-                from core.llm.memory import get_all_memories, _get_memory
-                import asyncio as _asyncio
-                all_items = await get_all_memories(user_id)
-                untagged = [
-                    item for item in all_items
-                    if not (item.get("metadata") or {}).get("type")
-                    and "用户特征" in (item.get("memory") or "")
-                ]
-                if untagged:
-                    mem_client = _get_memory()
-                    loop = _asyncio.get_running_loop()
-                    for item in untagged:
-                        mid = item.get("id")
-                        if mid:
-                            await loop.run_in_executor(
-                                None,
-                                lambda _id=mid: mem_client.update(_id, item.get("memory", ""), metadata=_USER_PROFILE_METADATA)
-                            )
-                    logger.info("[Memory] user profile metadata patched for %d entries", len(untagged))
-            except Exception as patch_exc:
-                logger.debug("[Memory] metadata patch failed (non-critical): %s", patch_exc)
-
-            logger.info("[Memory] user profile merged & saved for user=%s, facts=%d", user_id, len(facts))
+            logger.info("[Memory] user profile merged & saved for user=%s, retrieved=%d, facts=%d, written=%d",
+                        user_id, len(retrieved_items), len(facts), written)
         except Exception as exc:
             logger.debug("[Memory] user profile save failed (non-critical): %s", exc)
 
