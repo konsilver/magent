@@ -155,10 +155,6 @@ def main() -> None:
 
 # Maps: config_key → list of env var names to try (first non-empty wins)
 _SERVICE_ENV_MAP = {
-    "query_database.url": ["QUERY_DATABASE_URL", "DATABASE_API_URL", "DB_QUERY_API_URL"],
-    "query_database.timeout": ["QUERY_DATABASE_TIMEOUT_SECONDS"],
-    "query_database.retry_times": ["QUERY_DATABASE_RETRY_TIMES"],
-    "query_database.max_output_tokens": ["QUERY_DATABASE_MAX_OUTPUT_TOKENS"],
     "knowledge_base.provider": ["KNOWLEDGE_BASE"],
     "knowledge_base.url": ["DIFY_URL", "DIFY_BASE_URL"],
     "knowledge_base.api_key": ["DIFY_API_KEY", "DIFY_AUTH_TOKEN"],

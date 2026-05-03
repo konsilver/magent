@@ -19,10 +19,8 @@
 - **pandas** — 数据分析与 DataFrame 操作
 - **numpy** — 数值计算与数组操作
 - **matplotlib** — 静态图表可视化
-- **seaborn** — 统计图表（基于 matplotlib）
 - **scipy** — 科学计算与统计分析
-- **openpyxl** — Excel 文件读写
-- **xlsxwriter** — Excel 文件生成
+
 
 ### 资源限制
 - **内存**: 单脚本 256MB，容器 512MB

@@ -310,6 +310,7 @@ async def _astream_subagent_direct(
             model_name=_stream_model_name,
             memory_enabled=_mem0_enabled,
             user_agent=user_agent,
+            code_exec_enabled=True,
         )
 
         _native_ltm_active = getattr(agent, 'long_term_memory', None) is not None

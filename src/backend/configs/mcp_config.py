@@ -61,16 +61,6 @@ def _stdio_env(*extra_keys: str) -> dict[str, str]:
 
 MCP_SERVERS: Dict[str, dict] = {
     # one-tool-per-server (stdio)
-    "query_database": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["-m", "mcp_servers.query_database_mcp.server"],
-        "env": _stdio_env(
-            # QUERY_DATABASE_URL and related vars are now injected dynamically
-            # by factory.py via SystemConfigService.get_service_env_overlay()
-            "DATABASE_URL",
-        ),
-    },
     "retrieve_dataset_content": {
         "transport": "streamable_http",
         "url": _kb_mcp_http_url(),
@@ -108,22 +98,6 @@ MCP_SERVERS: Dict[str, dict] = {
         "env": _stdio_env(),
     },
 
-    "generate_chart_tool": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["-m", "mcp_servers.generate_chart_tool_mcp.server"],
-        "env": _stdio_env(
-            # Model env vars (API_KEY, MODEL_URL, BASE_MODEL_NAME) are now
-            # injected dynamically by factory.py via ModelConfigService.get_mcp_env_overlay()
-            *_ARTIFACT_STORAGE_ENV_KEYS,
-        ),
-    },
-    "report_export_mcp": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["-m", "mcp_servers.report_export_mcp.server"],
-        "env": _stdio_env(*_ARTIFACT_STORAGE_ENV_KEYS),
-    },
     "web_fetch": {
         "transport": "stdio",
         "command": "python",

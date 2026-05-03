@@ -34,6 +34,7 @@ VERSIONED_FIELDS = {
     "max_tokens": "最大输出长度",
     "max_iters": "最大推理轮次",
     "timeout": "超时时间",
+    "code_exec_enabled": "代码执行",
     "is_enabled": "启用状态",
 }
 
@@ -288,6 +289,7 @@ class UserAgentService:
             "max_tokens": agent.max_tokens,
             "max_iters": agent.max_iters,
             "timeout": agent.timeout,
+            "code_exec_enabled": agent.code_exec_enabled,
             "is_enabled": agent.is_enabled,
             "sort_order": agent.sort_order,
             "extra_config": extra_config,

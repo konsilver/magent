@@ -17,8 +17,6 @@
       "code_execution_mcp",
       "retrieve_dataset_content",
       "internet_search",
-      "generate_chart_tool",
-      "report_export_mcp",
       "web_fetch"
     ]
   },

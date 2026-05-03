@@ -19,11 +19,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # Pre-defined service configuration items to seed on first migration.
 _SEED_CONFIGS = [
-    # ── query_database ──
-    ("query_database.url", None, "数据库查询接口 URL", "NL2SQL 数据库查询服务地址", "query_database", False),
-    ("query_database.timeout", "40", "超时时间(秒)", "请求超时时间", "query_database", False),
-    ("query_database.retry_times", "1", "重试次数", "请求失败重试次数", "query_database", False),
-    ("query_database.max_output_tokens", "45000", "最大输出 Token", "数据库查询最大输出 Token 数", "query_database", False),
     # ── knowledge_base ──
     ("knowledge_base.provider", "dify", "知识库后端", "知识库服务提供方", "knowledge_base", False),
     ("knowledge_base.url", None, "知识库 API URL", "Dify 或其他知识库服务地址", "knowledge_base", False),

@@ -87,6 +87,66 @@ async def _call_llm_agent(
         await close_clients(mcp_clients)
 
 
+async def _call_llm_agent_with_code_exec(
+    prompt: str,
+    model_name: str,
+    user_id: str,
+    timeout: int = 120,
+    _agent_label: str = "LLMAgentCodeExec",
+) -> str:
+    """Call an agent with execute_code tool enabled, return stripped text output."""
+    _t0 = _time.monotonic()
+    logger.info("[%s] START model=%s user=%s prompt_chars=%d timeout=%ds",
+                _agent_label, model_name, user_id, len(prompt), timeout)
+    agent, mcp_clients = await create_agent_executor(
+        disable_tools=False,
+        model_name=model_name,
+        current_user_id=user_id,
+        isolated=True,
+        code_exec_enabled=True,
+    )
+    _usage_proxy = _UsageTrackingModel(agent.model)
+    agent.model = _usage_proxy
+    try:
+        from agentscope.message import Msg
+        user_msg = Msg(name="user", content=prompt, role="user")
+        reply = await asyncio.wait_for(agent.reply(user_msg), timeout=timeout)
+        text = ""
+        if hasattr(reply, "content"):
+            if isinstance(reply.content, str):
+                text = reply.content
+            elif isinstance(reply.content, list):
+                parts = []
+                for block in reply.content:
+                    if hasattr(block, "text"):
+                        parts.append(block.text)
+                    elif isinstance(block, dict) and "text" in block:
+                        parts.append(block["text"])
+                    elif isinstance(block, str):
+                        parts.append(block)
+                text = "\n".join(parts)
+            else:
+                text = str(reply.content)
+        else:
+            text = str(reply)
+        result = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        _elapsed = (_time.monotonic() - _t0) * 1000
+        _records = _usage_proxy.usage_records
+        _prompt_tok = sum(r.get("prompt_tokens", 0) for r in _records)
+        _completion_tok = sum(r.get("completion_tokens", 0) for r in _records)
+        logger.info("[%s] DONE elapsed=%.0fms output_chars=%d prompt_tokens=%d completion_tokens=%d",
+                    _agent_label, _elapsed, len(result), _prompt_tok, _completion_tok)
+        return result
+    except asyncio.TimeoutError:
+        logger.warning("[%s] TIMEOUT after %ds", _agent_label, timeout)
+        raise
+    except Exception as exc:
+        logger.warning("[%s] ERROR after %.0fms: %s", _agent_label, (_time.monotonic() - _t0) * 1000, exc)
+        raise
+    finally:
+        await close_clients(mcp_clients)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # UserProfile Agent
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -668,7 +728,7 @@ async def _run_warmup(
 # QA Agent
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_QA_PROMPT_TEMPLATE = """你是 QA Agent，负责验证 SubAgent 的执行结果。
+_QA_PROMPT_TEMPLATE = """你是 QA Agent，负责验证 SubAgent 的执行结果。你可以调用 execute_code 工具运行 Python 代码来辅助验证（例如：校验数值计算、检查格式、验证逻辑一致性）。
 
 ## context 黑板
 {context_board}
@@ -771,7 +831,7 @@ async def _run_qa(
         last_step_hint=last_step_hint,
     )
     try:
-        text = await _call_llm_agent(prompt, model_name, user_id, timeout=90, _agent_label="QA")
+        text = await _call_llm_agent_with_code_exec(prompt, model_name, user_id, timeout=90, _agent_label="QA")
         data = _parse_json_output(text)
         if data and "verdict" in data:
             if isinstance(data.get("failure_reason"), dict):

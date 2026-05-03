@@ -254,17 +254,9 @@ def _build_kb_lite_section(enabled_kb_ids: Optional[List[str]]) -> str:
 # Tool routing hints — only rendered for tools that are actually enabled.
 # ---------------------------------------------------------------------------
 TOOL_ROUTING_HINTS: dict[str, dict[str, str]] = {
-    "query_database": {
-        "priority": "1-最高",
-        "when": "查询精确数值指标（产值、增速、利润等）",
-    },
     "retrieve_dataset_content": {
         "priority": "2-高",
         "when": "检索政策文件、产业报告、文档原文",
-    },
-    "retrieve_local_kb": {
-        "priority": "2-高",
-        "when": "检索用户私有知识库中的文档",
     },
     "get_chain_information": {
         "priority": "2-高",
@@ -285,18 +277,6 @@ TOOL_ROUTING_HINTS: dict[str, dict[str, str]] = {
     "web_fetch": {
         "priority": "-",
         "when": "由搜索类技能（如'中文网页搜索'）指定调用，或由用户要求抓取/爬取对应网页信息时使用，其他情况下不要自行直接使用",
-    },
-    "generate_chart_tool": {
-        "priority": "-",
-        "when": "用户要求绘图/图表，需先取到数据",
-    },
-    "export_report_to_docx": {
-        "priority": "-",
-        "when": "用户要求导出Word报告",
-    },
-    "export_table_to_excel": {
-        "priority": "-",
-        "when": "用户要求导出Excel表格",
     },
 }
 

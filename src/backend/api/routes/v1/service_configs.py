@@ -1,7 +1,7 @@
 """Service configuration management API routes (admin-only).
 
 Provides list / update / test / export / import for external service configs
-(query_database, knowledge_base, industry, file_parser).
+(knowledge_base, industry, file_parser, internet_search).
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ router = APIRouter(prefix="/v1/service-configs", tags=["ServiceConfigs"])
 logger = logging.getLogger(__name__)
 
 _GROUP_LABELS: Dict[str, str] = {
-    "query_database": "数据库查询服务",
     "knowledge_base": "知识库服务",
     "industry": "产业知识中心",
     "file_parser": "文件解析服务",
@@ -169,13 +168,7 @@ async def test_service_connectivity(
 
     svc = _svc()
 
-    if group_key == "query_database":
-        url = svc.get("query_database.url")
-        if not url:
-            return success_response(data={"success": False, "error": "URL 未配置", "latency_ms": 0})
-        return success_response(data=await _test_http_health(url))
-
-    elif group_key == "knowledge_base":
+    if group_key == "knowledge_base":
         url = svc.get("knowledge_base.url")
         api_key = svc.get("knowledge_base.api_key")
         if not url:

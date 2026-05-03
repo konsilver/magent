@@ -38,6 +38,7 @@ class AgentCreateRequest(BaseModel):
     max_tokens: Optional[int] = None
     max_iters: Optional[int] = 10
     timeout: Optional[int] = 120
+    code_exec_enabled: Optional[bool] = False
     extra_config: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -56,6 +57,7 @@ class AgentUpdateRequest(BaseModel):
     max_tokens: Optional[int] = None
     max_iters: Optional[int] = None
     timeout: Optional[int] = None
+    code_exec_enabled: Optional[bool] = None
     is_enabled: Optional[bool] = None
     extra_config: Optional[Dict[str, Any]] = None
 

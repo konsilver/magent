@@ -31,7 +31,6 @@ from core.llm.hooks import (
 )
 from core.llm.tool import (
     register_execute_code_tools,
-    register_myspace_tools,
     register_read_artifact,
     register_run_skill_script,
     register_sandboxed_view_text_file,
@@ -488,7 +487,6 @@ async def create_agent_executor(
     # ── Phase 3.6: Register execute_code tool (Lab code execution sessions only) ──
     if code_exec_enabled:
         register_execute_code_tools(toolkit, user_id=current_user_id)
-        register_myspace_tools(toolkit, user_id=current_user_id)
 
     # ── Phase 3.7: Register read_artifact for cross-turn file access ──
     # Unconditional: any user may have uploaded files in prior turns of this chat,
@@ -506,6 +504,21 @@ async def create_agent_executor(
             enabled_kb_ids=enabled_kb_ids,
         )
         _log.info("[factory] +%s subagent system prompt built (%d chars)", _elapsed(), len(system_prompt))
+        if code_exec_enabled:
+            _code_exec_dir = os.path.join(
+                os.path.dirname(__file__), '..', '..', 'prompts', 'prompt_text', 'code_exec', 'system',
+            )
+            if os.path.isdir(_code_exec_dir):
+                _prompt_files = sorted(
+                    f for f in os.listdir(_code_exec_dir)
+                    if f.endswith('.system.md')
+                )
+                for _pf in _prompt_files:
+                    _pf_path = os.path.join(_code_exec_dir, _pf)
+                    with open(_pf_path, 'r', encoding='utf-8') as _f:
+                        system_prompt += "\n\n" + _f.read()
+                _log.info("[factory] +%s subagent code execution prompts injected (%d files)",
+                          _elapsed(), len(_prompt_files))
     else:
         system_prompt = build_system_prompt(
             cfg, ctx={

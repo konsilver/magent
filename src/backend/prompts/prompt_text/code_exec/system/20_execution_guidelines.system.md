@@ -35,14 +35,7 @@
   ```
 - 每个图表单独一张，不使用 subplots（除非用户明确要求）
 - 保存图表到 `/workspace/` 目录：`plt.savefig('/workspace/output.png', dpi=150, bbox_inches='tight')`
-- 系统自动检测 `/workspace/` 中生成的文件并展示给用户（图片、CSV、Excel、PDF 等）
 - 使用有意义的文件名（如 `销售趋势.png`、`分析结果.csv`），避免 `output`、`temp` 等通用名
-
-### 数据处理规范
-- Excel 文件使用 openpyxl（读写）或 xlsxwriter（生成）
-- CSV 文件使用 pandas 处理
-- 大文件先使用 `nrows` 参数预览前几行，确认结构后再完整处理
-- 输出数据结果时使用 `df.to_string()` 或 `tabulate` 格式化表格
 
 ### 安全约束
 - 不要执行破坏性操作（如 `rm -rf /`）

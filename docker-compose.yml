@@ -147,7 +147,6 @@ services:
       ROLE_SUMMARY_MODEL: ${ROLE_SUMMARY_MODEL:-}
 
       # MCP Tool Backends
-      QUERY_DATABASE_URL: ${QUERY_DATABASE_URL:-}
       KNOWLEDGE_BASE: ${KNOWLEDGE_BASE:-}
       DIFY_URL: ${DIFY_URL:-}
       DIFY_API_KEY: ${DIFY_API_KEY:-}

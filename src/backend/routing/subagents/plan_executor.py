@@ -146,7 +146,8 @@ async def _run_subagent_step(
         retrieved_memory,
     )
 
-    logger.info("[SubAgent] START step=%d(%s) id=%s model=%s", step.step_order, step.title, step.step_id, model_name)
+    logger.info("[SubAgent] START step=%d(%s) id=%s model=%s prompt_chars=%d\n--- PROMPT ---\n%s\n--- PROMPT END ---",
+                step.step_order, step.title, step.step_id, model_name, len(instruction), instruction)
 
     step_text = ""
     step_tool_calls: List[Dict] = []

@@ -30,8 +30,6 @@ class CitationItem:
 _SOURCE_TYPE_MAP: Dict[str, str] = {
     "internet_search": "internet",
     "retrieve_dataset_content": "knowledge_base",
-    "retrieve_local_kb": "knowledge_base",
-    "query_database": "database",
     "get_industry_news": "industry_news",
     "get_latest_ai_news": "ai_news",
     "get_chain_information": "chain_info",
@@ -71,10 +69,6 @@ def extract_citations(
             return _internet_search(tool_id, source_type, result)
         if tool_name == "retrieve_dataset_content":
             return _dataset_content(tool_id, source_type, result)
-        if tool_name == "retrieve_local_kb":
-            return _local_kb(tool_id, source_type, result)
-        if tool_name == "query_database":
-            return _database(tool_id, source_type, result)
         if tool_name in {"get_industry_news", "get_latest_ai_news"}:
             return _news(tool_name, tool_id, source_type, result)
         if tool_name == "get_chain_information":
@@ -150,42 +144,6 @@ def _dataset_content(tool_id: Optional[str], source_type: str, data: dict) -> Li
             source_type=source_type,
         ))
     return out
-
-
-def _local_kb(tool_id: Optional[str], source_type: str, data: dict) -> List[CitationItem]:
-    items = data.get("items", [])
-    out: List[CitationItem] = []
-    for i, item in enumerate(items, 1):
-        if not isinstance(item, dict):
-            continue
-        if item.get("error"):
-            continue
-        title = str(item.get("title") or "私有知识库文档")[:120]
-        snippet = str(item.get("content") or "")[:3000]
-        out.append(CitationItem(
-            id=f"retrieve_local_kb-{i}",
-            tool_name="retrieve_local_kb",
-            tool_id=tool_id,
-            title=title,
-            url="",
-            snippet=snippet,
-            source_type=source_type,
-        ))
-    return out
-
-
-def _database(tool_id: Optional[str], source_type: str, data: dict) -> List[CitationItem]:
-    res = data.get("result", data)
-    snippet = str(res) if not isinstance(res, str) else res
-    return [CitationItem(
-        id="query_database-1",
-        tool_name="query_database",
-        tool_id=tool_id,
-        title="数据库查询结果",
-        url="",
-        snippet=snippet[:3000],
-        source_type=source_type,
-    )]
 
 
 def _news(

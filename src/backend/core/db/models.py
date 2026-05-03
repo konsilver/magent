@@ -540,6 +540,7 @@ class UserAgent(Base):
     # Runtime controls
     max_iters       = Column(Integer, default=10)
     timeout         = Column(Integer, default=120)
+    code_exec_enabled = Column(Boolean, default=False)
     is_enabled      = Column(Boolean, default=True)
     sort_order      = Column(Integer, default=0)
 
