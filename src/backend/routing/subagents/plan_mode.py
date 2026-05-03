@@ -573,6 +573,10 @@ async def astream_execute_plan(
                     "label": "SubAgent 执行任务" if redo_count == 0 else f"SubAgent 重做任务（第 {redo_count} 次）",
                 }
                 _step_complexity = getattr(step, "complexity", "complex")
+                logger.info("[complexity] step=%s(%r) complexity=%s subagent_model=%s qa_model=%s",
+                            step.step_id, getattr(step, "title", ""), _step_complexity,
+                            _subagent_model(_step_complexity, model_name),
+                            _qa_model(_step_complexity, model_name))
                 async for event in _run_subagent_step(
                     step=step,
                     next_step=next_step,

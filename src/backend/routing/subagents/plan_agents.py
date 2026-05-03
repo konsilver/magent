@@ -550,7 +550,8 @@ async def _run_planner(
                     }
                     for i, s in enumerate(steps)
                 ]
-            logger.info("[%s] plan generated: steps=%d", _label, len(steps))
+            logger.info("[%s] plan generated: steps=%d complexities=%s", _label, len(steps),
+                        [s.get("complexity", "missing") for s in steps])
         else:
             logger.warning("[%s] JSON parse failed, returning None", _label)
         return data
