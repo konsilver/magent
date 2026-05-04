@@ -22,13 +22,19 @@ from routing.subagents.plan_store import (
 )
 from routing.subagents.plan_agents import _run_qa
 
+_CODE_EXEC_PROMPT_CACHE: Optional[str] = None
+
 
 def _load_code_exec_prompt() -> str:
-    """Load and concatenate all code_exec system prompt files."""
+    """Load and concatenate all code_exec system prompt files (cached)."""
+    global _CODE_EXEC_PROMPT_CACHE
+    if _CODE_EXEC_PROMPT_CACHE is not None:
+        return _CODE_EXEC_PROMPT_CACHE
     _code_exec_dir = os.path.join(
         os.path.dirname(__file__), '..', '..', 'prompts', 'prompt_text', 'code_exec', 'system',
     )
     if not os.path.isdir(_code_exec_dir):
+        _CODE_EXEC_PROMPT_CACHE = ""
         return ""
     sections = []
     for fname in sorted(f for f in os.listdir(_code_exec_dir) if f.endswith('.system.md')):
@@ -36,7 +42,8 @@ def _load_code_exec_prompt() -> str:
             content = f.read().strip()
             if content:
                 sections.append(content)
-    return "\n\n".join(sections)
+    _CODE_EXEC_PROMPT_CACHE = "\n\n".join(sections)
+    return _CODE_EXEC_PROMPT_CACHE
 
 
 def _build_subagent_instruction(
@@ -100,41 +107,21 @@ def _build_subagent_instruction(
 }}"""
 
     _code_exec_hint = (
-        "\n7. 若你在本步骤中执行了代码（当你的步骤的if_code_exc为true时），**必须**在输出末尾 JSON 块的 \"result\" 字段中"
-        "包含代码本身与代码执行结果，若代码长度超过100行则改为包含简化的伪代码，若代码执行结果超过60字则改为简化的结果，若代码执行失败则字段填充报错信息"
+        "（若执行了代码，result 字段需包含代码内容与执行结果；超过100行则用伪代码；执行失败则填报错信息）"
     ) if code_exec_enabled else ""
 
     parts.append(f"""## 执行要求
 1. 聚焦当前步骤目标，不执行其他步骤的任务
-2. 如果你的if_code_exc为false，禁止调用代码执行工具，如果为tru，则必须执行代码检验执行结果
 2. 必须遵守上述局部约束（如有）和 context 黑板中的 global_constraints
 3. context 黑板中已完成步骤的 output 字段记录了前序步骤的执行结果，结合这些输出完成你的任务
-4. 完成执行后，**必须**在输出末尾附加如下 JSON 块：{_code_exec_hint}
-
+4. if_code_exc=false 时禁止调用代码执行工具；if_code_exc=true 时必须执行代码并验证结果
+5. 完成执行后，输出如下 JSON 块{_code_exec_hint}：
 ```json
 {{
-  "result": "当前步骤执行结果",
+  "result": "当前步骤执行结果摘要",
   "next_step_instruction": {next_step_instruction_hint}
 }}
 ```
-
-{"【制定下一步约束】在输出 JSON 前，先审视整个计划（context 黑板中的全部步骤）以及下一步任务的具体内容，再为下一步制定局部约束与输出格式，遵循以下规则：" if not is_last_step else "这是最后一步，next_step_instruction 填 null。"}""")
-
-    if not is_last_step:
-        parts.append("""\
-## 约束生成规则（为下一步制定约束时必须遵守）
-
-**Step 1：生成 expected_output_schema（先于 constraint 生成）**
-- fields：列出下一步输出应包含的所有字段
-- required：必须是 fields 的子集
-
-**Step 2：生成 local_constraint**
-- 每个 required 字段必须有 field_presence constraint
-- 禁止引用 fields 中未定义的字段
-- 不允许生成模糊约束（如：合理、尽量、适当）
-- 每条 constraint 设定有自己的 priority（"hard" 或 "soft"），软硬约束比例：hard ≥ 60%，soft ≤ 40%
-- 禁止为低风险任务添加结构性约束
-- 【重要】如果这个步骤的plan_steps-if_code_exc字段为true，则为其制定验证代码执行效果的软约束
 """)
 
     if code_exec_enabled:
@@ -217,6 +204,29 @@ async def _run_subagent_step(
                 # Inject model_name into context so dynamic_model hook uses the right model
                 if hasattr(agent, "_jx_context") and agent._jx_context is not None:
                     agent._jx_context.model_name = model_name
+                # Pool agents carry the full main-agent system prompt; replace with
+                # the plan-mode minimal prompt so SubAgent gets no irrelevant context.
+                import datetime as _datetime
+                _plan_sys = "\n\n".join([
+                    f"## 当前时间\n{_datetime.datetime.now().isoformat()}",
+                    (
+                        "## 输出格式\n"
+                        "- 代码必须放在带语言标识的 Markdown 代码块中（` ```python `、` ```bash ` 等）\n"
+                        "- 执行成功：输出 `执行成功（exit_code: 0）` 及关键 stdout\n"
+                        "- 执行失败：输出 `执行失败（exit_code: N）` 及完整 stderr\n"
+                        "- 语言：中文输出，技术术语保留英文原文"
+                    ),
+                ])
+                try:
+                    agent.sys_prompt = _plan_sys
+                except AttributeError:
+                    object.__setattr__(agent, "_sys_prompt", _plan_sys)
+                # Pool agents carry a full MCP+Skills toolkit built for the main agent.
+                # Replace with an empty toolkit for simple steps (no tools allowed),
+                # or keep as-is for complex steps (full MCP access).
+                if step_complexity != "complex":
+                    from agentscope.tool import Toolkit as _Toolkit
+                    agent.toolkit = _Toolkit()
                 _pool_slot = _pooled
                 logger.info("[SubAgent] step=%d acquired from pool in %.0fms model=%s",
                             step.step_order, (_time.monotonic() - _acquire_t0) * 1000, model_name)
@@ -239,6 +249,7 @@ async def _run_subagent_step(
                 isolated=False,
                 max_iters=_step_max_iters,
                 code_exec_enabled=code_exec_enabled,
+                plan_mode=True,
             )
             logger.info("[SubAgent] step=%d created fresh agent in %.0fms",
                         step.step_order, (_time.monotonic() - _create_t0) * 1000)
@@ -255,10 +266,6 @@ async def _run_subagent_step(
             agent._instance_pre_reply_hooks["dynamic_model"] = _patched_hook
 
         from agentscope.message import Msg
-        from core.llm.message_compat import load_session_into_memory
-
-        await load_session_into_memory(prepared_history, agent.memory)
-
         from routing.subagents.plan_store import _build_file_context
         file_context = _build_file_context(uploaded_files or [])
         if file_context:
@@ -375,7 +382,6 @@ async def _run_subagent_step(
                 step_text = str(reply)
 
             step_text = re.sub(r"<think>.*?</think>", "", step_text, flags=re.DOTALL).strip()
-            step_text = _filter_reasoning_content(step_text)
             step_tool_calls = _collected_calls
 
             _exec_elapsed = (_time.monotonic() - _step_start) * 1000
@@ -397,9 +403,7 @@ async def _run_subagent_step(
 
             # 只向前端发送 narrative 部分，JSON 块留给后续约束传递，不展示给用户
             _narrative_for_display, _ = _extract_next_step_instruction(step_text)
-            # threshold=0: no safety guard — always strip reasoning preamble for display
-            _display = _strip_thinking_preamble(_narrative_for_display or step_text, threshold=0)
-            yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": _display}
+            yield {"type": "plan_step_progress", "step_id": step.step_id, "delta": _narrative_for_display or step_text}
 
         except asyncio.TimeoutError:
             logger.warning("[SubAgent] step=%d(%s) TIMEOUT", step.step_order, step.title)
@@ -446,109 +450,6 @@ async def _run_subagent_step(
         "error_msg": _step_error_msg,
     }
 
-
-_REASONING_LINE_PATTERN = re.compile(
-    r"^(好的|当然|让我|我来|我需要|我将|我会|我可以|我看到|我注意到|我了解"
-    r"|首先|其次|最后|根据|分析|理解|明白|现在|接下来|下面|以下"
-    r"|从.{1,20}中.*看到|从.{1,20}中.*可以|从context"
-    r"|okay|sure|let me|i will|i'll|i need to|i can see|i notice"
-    r"|first|second|finally|based on|alright|now|next)[，,。.：: \s]",
-    re.IGNORECASE,
-)
-
-_REASONING_PARA_PATTERN = re.compile(
-    r"^(步骤\d+已完成|步骤\d+：|现在我需要|我需要编写|让我设计|让我来|根据局部约束"
-    r"|根据历史|根据上述|根据context|根据以上|根据前面"
-    r"|用户要求我执行|用户要求我|用户希望我|用户想要我)",
-    re.IGNORECASE,
-)
-
-
-def _filter_reasoning_content(text: str) -> str:
-    """Remove reasoning/thinking paragraphs from anywhere in the text.
-
-    Reasoning paragraphs are contiguous blocks of lines that start with
-    meta-commentary patterns. Code blocks and JSON blocks are always preserved.
-    If filtering removes more than 80% of the text, the original is returned.
-    """
-    if not text:
-        return text
-
-    lines = text.splitlines(keepends=True)
-    result_lines = []
-    in_code_block = False
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Track code/json fences — always keep verbatim
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
-            result_lines.append(line)
-            i += 1
-            continue
-
-        if in_code_block:
-            result_lines.append(line)
-            i += 1
-            continue
-
-        # Check if this line starts a reasoning paragraph
-        if stripped and (
-            _REASONING_LINE_PATTERN.match(stripped)
-            or _REASONING_PARA_PATTERN.match(stripped)
-        ):
-            # Consume the whole reasoning paragraph (until blank line or next section)
-            i += 1
-            while i < len(lines):
-                next_stripped = lines[i].strip()
-                if not next_stripped:  # blank line ends the paragraph
-                    i += 1  # consume the blank line too
-                    break
-                if next_stripped.startswith("#") or next_stripped.startswith("```"):
-                    break  # new section starts — stop consuming
-                i += 1
-            continue
-
-        result_lines.append(line)
-        i += 1
-
-    candidate = "".join(result_lines).strip()
-    if not candidate or len(candidate) < len(text) * 0.20:
-        return text
-    return candidate
-
-
-def _strip_thinking_preamble(text: str, threshold: float = 0.70) -> str:
-    """Strip model meta-commentary from the beginning of a response.
-
-    Strategy: find the LAST line that looks like reasoning/preamble, strip
-    everything up to and including it.  If the stripped portion exceeds
-    `threshold` of the total length, keep the original (safety guard).
-    """
-    if not text:
-        return text
-
-    lines = text.splitlines()
-    last_reasoning_idx = -1
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and _REASONING_LINE_PATTERN.match(stripped):
-            last_reasoning_idx = i
-
-    if last_reasoning_idx == -1:
-        return text
-
-    candidate = "\n".join(lines[last_reasoning_idx + 1:]).strip()
-    if not candidate:
-        return text
-
-    if len(candidate) < len(text) * threshold:
-        return text
-
-    return candidate
 
 
 def _extract_next_step_instruction(step_text: str) -> Tuple[str, Dict]:

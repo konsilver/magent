@@ -58,6 +58,99 @@ def strip_thinking(text: str) -> str:
     return text
 
 
+import re as _re
+
+# Lines whose first non-empty content signals agent self-commentary.
+_FINAL_REASONING_PATTERN = _re.compile(
+    r"^(好的|当然|让我|我来|我需要|我将|我会|我可以|我看到|我注意到|我了解"
+    r"|首先|其次|最后|根据|分析|理解|明白|现在|接下来|下面|以下"
+    r"|从.{1,20}中.*(?:看到|可以)|从context"
+    r"|步骤\d+已完成|步骤\d+[：:]|现在我需要|我需要编写|让我设计|让我来"
+    r"|根据局部约束|根据历史|根据上述|根据context|根据以上|根据前面"
+    r"|用户要求我|用户希望我|用户想要我"
+    r"|必须包含|应包含|需要包含|代码必须|脚本必须"
+    r"|okay|sure|let me |i will |i'll |i need to |i can see |i notice"
+    r"|first[,， ]|second[,， ]|finally[,， ]|based on |alright|now[,， ]|next[,， ])",
+    _re.IGNORECASE,
+)
+
+# Markers that definitely indicate the start of real user-facing content.
+_CONTENT_START_PATTERN = _re.compile(
+    r"^(#{1,6}\s|```|\d+\.|以下是|下面是|这是|完整代码|完整脚本|Here is|Here's|The following)",
+    _re.IGNORECASE,
+)
+
+
+def strip_final_output_thinking(text: str) -> str:
+    """Remove agent self-commentary paragraphs from a final user-facing response.
+
+    Unlike _strip_thinking_preamble (which gives up when thinking exceeds a
+    threshold), this function always filters — it is intended only for the
+    final result shown to the user, where any reasoning leak is unacceptable.
+
+    Strategy:
+    - Scan from the top, skipping paragraphs whose first non-empty line matches
+      _FINAL_REASONING_PATTERN (agent meta-commentary).
+    - A paragraph that starts with a _CONTENT_START_PATTERN marker, or whose
+      first line does NOT match _FINAL_REASONING_PATTERN, is treated as real
+      content — everything from that point is returned as-is.
+    - Code fences always mark real content.
+    - If nothing survives, return the original so the user gets some response.
+    """
+    if not text:
+        return text
+
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if line.strip() == "" and current:
+            paragraphs.append(current)
+            current = []
+        else:
+            current.append(line)
+    if current:
+        paragraphs.append(current)
+
+    result_lines: list[str] = []
+    found_real_content = False
+
+    for para in paragraphs:
+        if found_real_content:
+            result_lines.extend(para)
+            result_lines.append("\n")
+            continue
+
+        first_non_empty = next((l.strip() for l in para if l.strip()), "")
+        if not first_non_empty:
+            continue
+
+        # Code fence — always real content
+        if first_non_empty.startswith("```"):
+            found_real_content = True
+            result_lines.extend(para)
+            result_lines.append("\n")
+            continue
+
+        # Explicit content marker
+        if _CONTENT_START_PATTERN.match(first_non_empty):
+            found_real_content = True
+            result_lines.extend(para)
+            result_lines.append("\n")
+            continue
+
+        # Reasoning paragraph — skip
+        if _FINAL_REASONING_PATTERN.match(first_non_empty):
+            continue
+
+        # Doesn't look like reasoning — real content starts here
+        found_real_content = True
+        result_lines.extend(para)
+        result_lines.append("\n")
+
+    candidate = "".join(result_lines).strip()
+    return candidate if candidate else text
+
+
 def _format_tool_output(output: Any) -> str:
     """Format tool output for inclusion in shared context messages."""
     if isinstance(output, str):

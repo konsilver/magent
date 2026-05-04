@@ -44,19 +44,16 @@ constraints": {
 
 1. 先检查当前step的expected_output_schema是否符合，如果不符合结果为REDO
 2. 验证global_constraints（priority=hard）+ local_constraint（priority=hard），如果任意一条不符合结果为REDO
-3. 检查局部constraint中的soft部分，交给LLM judge，如果返回fail or low confidence（<0.6）则REDO
-4. 对context进行LLM judge，判定是否REPLAN（confidence<0.8时触发）
+3. 检查全局和局部constraint中的soft部分，交给LLM judge，如果返回fail or low confidence（<0.7）则REDO
 5. 注意当你判断失败后不要直接结束check，而是继续检查未检查的点，将错误争取遍历发现，一起反馈给重做的subagent或planner
 
 
 //当QA面对失败情况时：
 当你判定REDO时，先让对应subagent重做子任务，次数达到2次以上，触发planner在当前step开始重新规划（之前的规划不改），而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
 
-当你判定REPLAN时，planner在当前step REPLAN，而当planner REPLAN次数达到1次以上，让planner触发全局 REPLAN，整个系统计划方案重置。
-
 系统重置后，你就像重新面对一个计划那样进行check（判定次数也重置）
 
-当你判定planner replan或subagent redo后，你需要给他们你判定失败的原因和优化建议，并把优化建议分别填入context的plan-steps-suggestion和plan-plan_suggestion
+当你判定subagent redo后，你需要给出你的解决问题的优化建议
 
 
 

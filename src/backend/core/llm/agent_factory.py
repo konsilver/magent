@@ -500,6 +500,30 @@ async def create_agent_executor(
                         system_prompt += "\n\n" + _f.read()
                 _log.info("[factory] +%s subagent code execution prompts injected (%d files)",
                           _elapsed(), len(_prompt_files))
+    elif plan_mode:
+        # Plan-mode SubAgent: use a minimal system prompt instead of the full v5 prompt pack.
+        # The v5 files describe a generic code-generation assistant with skills/MCP routing
+        # that are all irrelevant or misleading in a structured step-execution context.
+        from datetime import datetime as _dt
+        _now = _dt.now().isoformat()
+        _plan_sys_parts = [
+            f"## 当前时间\n{_now}",
+            (
+                "## 输出格式\n"
+                "- 代码必须放在带语言标识的 Markdown 代码块中（` ```python `、` ```bash ` 等）\n"
+                "- 执行成功：输出 `执行成功（exit_code: 0）` 及关键 stdout\n"
+                "- 执行失败：输出 `执行失败（exit_code: N）` 及完整 stderr\n"
+                "- 语言：中文输出，技术术语保留英文原文"
+            ),
+        ]
+        if enabled_mcp_keys:
+            _plan_sys_parts.append(
+                "## MCP 工具\n"
+                "你被授权调用以下 MCP 工具，其他 Agent 无权调用：\n"
+                + "\n".join(f"- {k}" for k in enabled_mcp_keys)
+            )
+        system_prompt = "\n\n".join(_plan_sys_parts)
+        _log.info("[factory] +%s plan-mode subagent system prompt built (%d chars)", _elapsed(), len(system_prompt))
     else:
         system_prompt = build_system_prompt(
             cfg, ctx={

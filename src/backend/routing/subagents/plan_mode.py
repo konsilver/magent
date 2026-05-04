@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from core.infra import log_writer
 from core.infra.logging import LogContext
 from routing.streaming import _UsageTrackingModel
+from core.llm.message_compat import strip_final_output_thinking
 
 import time as _time
 
@@ -80,7 +81,6 @@ from routing.subagents.plan_executor import (
     _build_subagent_instruction,
     _run_subagent_step,
     _extract_next_step_instruction,
-    _strip_thinking_preamble,
 )
 
 
@@ -630,7 +630,7 @@ async def astream_execute_plan(
                     "verdict": qa_verdict,
                 }
 
-                # 最后一步：REDO 最多两次，REPLAN 或超次数后直接接受结果
+                # 最后一步：REDO 最多两次，超次数后直接接受结果
                 if _is_last_step:
                     _final_plan_suggestion = qa_data.get("plan_suggestion", "")
                     if _final_plan_suggestion:
@@ -645,8 +645,8 @@ async def astream_execute_plan(
                         yield {"type": "plan_step_progress", "step_id": step.step_id,
                                "delta": f"\nQA 验证未通过，正在重试最后一步 ({redo_count}/{_MAX_REDO_PER_STEP})...\n"}
                         continue
-                    # REPLAN 或 REDO 超次数：直接接受当前结果，不触发重规划
-                    logger.warning("[QA] last-step verdict=%s — accepting result directly", qa_verdict)
+                    # REDO 超次数：直接接受当前结果
+                    logger.warning("[QA] last-step REDO limit reached — accepting result directly")
                     board["plan"]["suggestion"] = None
                     break
 
@@ -657,7 +657,6 @@ async def astream_execute_plan(
                 if qa_verdict == "REDO":
                     redo_count += 1
                     logger.warning("[QA] REDO step=%d redo=%d", step.step_order, redo_count)
-                    # 写入 board["plan"]["suggestion"]，供 subagent 重做时读取
                     board["plan"]["suggestion"] = qa_data.get("suggestion") or "（无建议）"
                     if redo_count >= _MAX_REDO_PER_STEP:
                         qa_verdict = "REPLAN"
@@ -668,9 +667,6 @@ async def astream_execute_plan(
                            "delta": f"\nQA 验证未通过，正在重试 ({redo_count}/{_MAX_REDO_PER_STEP})...\n"}
                     continue
 
-                if qa_verdict == "REPLAN":
-                    break
-
                 break
 
             # ── Handle REPLAN ─────────────────────────────────────────────────
@@ -678,11 +674,6 @@ async def astream_execute_plan(
                 local_replan_count += 1
                 logger.warning("[plan-exec] REPLAN triggered at step %d (local_count=%d, global_reset=%d)",
                                step.step_order, local_replan_count, global_reset_count)
-
-                # 确保 board 中记录了 redo_id 和 suggestion（QA 直接判断 REPLAN 时在此写入）
-                if board["plan"].get("redo_id", -1) == -1:
-                    board["plan"]["redo_id"] = step.step_order
-                    board["plan"]["suggestion"] = qa_data.get("suggestion") or "（无建议）"
 
                 yield {
                     "type": "plan_step_agent_activity",
@@ -915,7 +906,7 @@ async def astream_execute_plan(
 
             # ── Finalize step ─────────────────────────────────────────────────
             narrative_text, subagent_json = _extract_next_step_instruction(step_text)
-            display_text = _strip_thinking_preamble(narrative_text if narrative_text else step_text)
+            display_text = narrative_text if narrative_text else step_text
 
             step_result_summary = subagent_json.get("result", "") if subagent_json else ""
             for board_step in board["plan"]["steps"]:
@@ -997,7 +988,7 @@ async def astream_execute_plan(
         # 最后一步 subagent 本身即为总结性 agent，其输出直接作为最终结果
         # plan_suggestion 已在最后一步 QA 时写入 board["plan"]["plan_suggestion"]
         _final_plan_suggestion = board["plan"].get("plan_suggestion", "")
-        result_text = last_step_text
+        result_text = strip_final_output_thinking(last_step_text) if last_step_text else last_step_text
 
         _update_stored_plan(
             plan_id,
