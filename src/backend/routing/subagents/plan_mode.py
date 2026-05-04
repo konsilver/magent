@@ -413,13 +413,14 @@ async def astream_execute_plan(
     board["plan"]["steps"] = [
         {
             "step_id": s["step_id"],
+            "step_order": s.get("step_order", i + 1),
             "brief_description": s.get("brief_description", ""),
             "description": s.get("description") or s.get("title", ""),
             "output": None,
             "suggestion": None,
             "tool_use_trace": [],
         }
-        for s in plan_dict["steps"]
+        for i, s in enumerate(plan_dict["steps"])
     ]
 
     # ── Warmup Phase ──────────────────────────────────────────────────────────

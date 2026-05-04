@@ -565,9 +565,11 @@ async def create_agent_executor(
             _log.info("[factory] +%s subagent tool registered (%d agents)", _elapsed(), len(visible_subagents))
 
     # Create model (streaming enabled for SSE)
-    # Priority: code_exec/plan_agent role > explicit model_name > main_agent fallback
+    # Priority: explicit model_name > code_exec/plan_agent role > main_agent fallback
+    # model_name is set by complexity-based selection (_subagent_model); it must win over
+    # the plan_agent role default so simple steps use minimax and complex steps use glm-5.
     default_model = None
-    _mode_role = "code_exec" if code_exec_enabled else ("plan_agent" if plan_mode else None)
+    _mode_role = "code_exec" if code_exec_enabled else ("plan_agent" if (plan_mode and not model_name) else None)
     if _mode_role:
         try:
             from core.config.model_config import ModelConfigService

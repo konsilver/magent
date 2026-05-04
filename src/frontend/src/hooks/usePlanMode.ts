@@ -264,6 +264,10 @@ export async function sendPlanMode(
                   // Push the new activity as running
                   acts.push({ activity: actType, label: actLabel, status: 'running' });
                   stepResults[stepId].agentActivities = acts;
+                  // If step was redo_failed, resume to running so ActivityTimeline renders
+                  if (stepResults[stepId].status === 'redo_failed') {
+                    stepResults[stepId].status = 'running';
+                  }
                   updatePlanCard(true);
                 }
                 break;

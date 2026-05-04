@@ -21,6 +21,7 @@ from routing.subagents.plan_store import (
     _parse_json_output,
 )
 from routing.subagents.plan_agents import _run_qa
+from core.llm.message_compat import strip_thinking, strip_final_output_thinking
 
 _CODE_EXEC_PROMPT_CACHE: Optional[str] = None
 
@@ -382,6 +383,8 @@ async def _run_subagent_step(
                 step_text = str(reply)
 
             step_text = re.sub(r"<think>.*?</think>", "", step_text, flags=re.DOTALL).strip()
+            step_text = strip_thinking(step_text)
+            step_text = strip_final_output_thinking(step_text)
             step_tool_calls = _collected_calls
 
             _exec_elapsed = (_time.monotonic() - _step_start) * 1000
